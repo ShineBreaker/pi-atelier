@@ -38,6 +38,7 @@ atelier/
 │   └── workfile.ts
 ├── .gitignore
 ├── LICENSE
+├── README.md
 ├── index.ts
 └── package.json
 ```
