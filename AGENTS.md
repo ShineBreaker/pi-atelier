@@ -36,7 +36,10 @@ atelier/
 │   ├── runner.ts
 │   ├── session-log.ts
 │   └── workfile.ts
-└── index.ts
+├── .gitignore
+├── LICENSE
+├── index.ts
+└── package.json
 ```
 
 <!-- /structor -->
