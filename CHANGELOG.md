@@ -54,15 +54,15 @@ atelier 所有值得注意的变更都会记录在此文件。
 
 ### 关联提交
 
-| 范围                                | Commit    | 说明                                  |
-| ----------------------------------- | --------- | ------------------------------------- |
-| `atelier` 子模块                    | `93cf4ec` | FIX: `registerRun` 补 `runDir`        |
-| `atelier` 子模块                    | `4b8de46` | FEATURE: 多目录路径解析               |
-| `atelier` 子模块                    | `f7e30b3` | FEATURE: /&lt;agentname&gt; 空上下文注入 |
-| `atelier` 子模块                    | `e4e545e` | DOCS: AGENTS.md 路径解析/注入说明     |
-| `atelier` 子模块                    | `d15d7e2` | UPDATE: package.json 0.1.0 → 0.1.1    |
-| 父仓库 `stow/pi/.../wrapper.sh`     | `e75298f` | FIX: bash 端 `resolve_agent_file`     |
-| 父仓库 `stow/pi/.../extensions/atelier` | `a9cde8f` | UPDATE: bump submodule → 0.1.1         |
+| 范围                                    | Commit    | 说明                                     |
+| --------------------------------------- | --------- | ---------------------------------------- |
+| `atelier` 子模块                        | `93cf4ec` | FIX: `registerRun` 补 `runDir`           |
+| `atelier` 子模块                        | `4b8de46` | FEATURE: 多目录路径解析                  |
+| `atelier` 子模块                        | `f7e30b3` | FEATURE: /&lt;agentname&gt; 空上下文注入 |
+| `atelier` 子模块                        | `e4e545e` | DOCS: AGENTS.md 路径解析/注入说明        |
+| `atelier` 子模块                        | `d15d7e2` | UPDATE: package.json 0.1.0 → 0.1.1       |
+| 父仓库 `stow/pi/.../wrapper.sh`         | `e75298f` | FIX: bash 端 `resolve_agent_file`        |
+| 父仓库 `stow/pi/.../extensions/atelier` | `a9cde8f` | UPDATE: bump submodule → 0.1.1           |
 
 ---
 
@@ -81,12 +81,12 @@ atelier 所有值得注意的变更都会记录在此文件。
 新模块 `core/context.ts`（依赖 `getAgentDir()` from `@earendil-works/pi-coding-agent`，
 `import.meta.url` from `node:url`）。被以下 4 个读取点复用：
 
-| 读取点                          | 用途                          | 解析方式                        |
-| ------------------------------- | ----------------------------- | ------------------------------- |
-| `core/discovery.ts`             | `discoverAgents/discoverPrompts` | `getAgentDirs()/getPromptDirs()` 多目录扫描 + 去重 |
-| `runtime/launcher.ts`           | `prepareAgentPrompt`（subagent 启动） | `resolveAgentFile(name)`       |
-| `index.ts` `loadMainSessionAgentContext` | 主会话 worker/planner/reviewer 注入 | `resolveAgentFile(name)`       |
-| `stow/pi/.local/share/pi/scripts/subagent-wrapper.sh` | `parse_agent_md`（pane 内 bash） | `resolve_agent_file()` 函数（与 TS 端策略一致） |
+| 读取点                                                | 用途                                  | 解析方式                                           |
+| ----------------------------------------------------- | ------------------------------------- | -------------------------------------------------- |
+| `core/discovery.ts`                                   | `discoverAgents/discoverPrompts`      | `getAgentDirs()/getPromptDirs()` 多目录扫描 + 去重 |
+| `runtime/launcher.ts`                                 | `prepareAgentPrompt`（subagent 启动） | `resolveAgentFile(name)`                           |
+| `index.ts` `loadMainSessionAgentContext`              | 主会话 worker/planner/reviewer 注入   | `resolveAgentFile(name)`                           |
+| `stow/pi/.local/share/pi/scripts/subagent-wrapper.sh` | `parse_agent_md`（pane 内 bash）      | `resolve_agent_file()` 函数（与 TS 端策略一致）    |
 
 **bash 端 fallback 路径**（与 TS 端 `getAgentDirs()` 一致）：
 
@@ -115,12 +115,12 @@ USER_AGENTS_DIR="$XDG_CONFIG_HOME/pi/agents"
 
 ### 5. 兼容性矩阵
 
-| 项 | 0.1.0 | 0.1.1 |
-| -- | ----- | ----- |
-| pi 扩展 API 最低版本 | 0.74+ | 0.74+ |
-| Node.js 最低版本 | 22.0+ | 22.0+（`node:sqlite` 实验性） |
-| tmux 最低版本 | 3.0+ | 3.0+ |
-| schema 版本（atelier_runs） | v2 | v2（无变化） |
+| 项                          | 0.1.0 | 0.1.1                         |
+| --------------------------- | ----- | ----------------------------- |
+| pi 扩展 API 最低版本        | 0.74+ | 0.74+                         |
+| Node.js 最低版本            | 22.0+ | 22.0+（`node:sqlite` 实验性） |
+| tmux 最低版本               | 3.0+  | 3.0+                          |
+| schema 版本（atelier_runs） | v2    | v2（无变化）                  |
 
 ### 6. 已知问题
 
