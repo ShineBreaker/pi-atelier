@@ -24,7 +24,7 @@ import type {
   SubagentConfig,
 } from "../core/types.ts";
 import { TOP_ROW_PERCENT } from "../core/types.ts";
-import { removeSubagentOnlyMarkers } from "../core/context.ts";
+import { removeSubagentOnlyMarkers, resolveAgentFile } from "../core/context.ts";
 import { registerRun } from "../registry/registry.ts";
 import { formatReturnHeaderInstruction } from "../registry/return-header.ts";
 import { isSystemAgent } from "../core/system-agents.ts";
@@ -193,12 +193,10 @@ export function prepareAgentPrompt(
   agentName: string,
   runDir: string,
 ): string | null {
-  const agentPath = path.join(
-    process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"),
-    "pi",
-    "agents",
-    `${agentName}.md`,
-  );
+  // 走共享路径解析（插件内置 context/agents 优先，~/.config/pi/agents 兼容）
+  const agentPath = resolveAgentFile(agentName);
+  if (!agentPath) return null;
+
   let content: string;
   try {
     content = fs.readFileSync(agentPath, "utf-8");

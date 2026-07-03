@@ -3,21 +3,25 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Agent 和 Prompt 发现 — 从 agents/ 和 prompts/ 目录扫描 .md 文件
+ * Agent 和 Prompt 发现 — 扫描候选目录下的 .md 文件并解析 frontmatter。
  *
- * Agent 位置：$XDG_CONFIG_HOME/pi/agents/*.md（含 YAML frontmatter）
- * Prompt 位置：$XDG_CONFIG_HOME/pi/prompts/*.md（含 YAML frontmatter + JSON 模板）
+ * 2026 重构后路径优先级（见 context.ts 的 getAgentDirs/getPromptDirs）：
+ *   1. 插件内置 context/{agents,prompts}/（atelier 自包含 agent 定义）
+ *   2. getAgentDir()/{agents,prompts}/（用户自定义，兼容旧路径）
+ *
+ * 同名 agent：插件内置优先，用户自定义被忽略（避免重复注册）。
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig, PromptConfig } from "./types.ts";
+import { getAgentDirs, getPromptDirs } from "./context.ts";
 
 // ─── Agent 发现 ──────────────────────────────────────────────────────────────
 
 /**
- * 扫描 agents/ 目录下的 .md 文件，解析 frontmatter 提取 agent 配置。
+ * 扫描候选 agents/ 目录下的 .md 文件，解析 frontmatter 提取 agent 配置。
  *
  * 每个 agent .md 文件格式：
  * ---
@@ -30,53 +34,59 @@ import type { AgentConfig, PromptConfig } from "./types.ts";
  *
  * 模型档次通过 frontmatter `tier:` 字段声明；具体 model + fallback 在
  * settings.json 的 `atelier.tiers` 段集中配置。
+ *
+ * 同名 agent：插件内置目录优先（按 getAgentDirs() 顺序），后扫到的跳过。
  */
 export function discoverAgents(): AgentConfig[] {
-  const agentsDir = path.join(getAgentDir(), "agents");
   const agents: AgentConfig[] = [];
+  const seen = new Set<string>(); // 按 name 去重（插件内置优先）
 
-  if (!fs.existsSync(agentsDir)) return agents;
+  for (const agentsDir of getAgentDirs()) {
+    if (!fs.existsSync(agentsDir)) continue;
 
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(agentsDir, { withFileTypes: true });
-  } catch {
-    return agents;
-  }
-
-  for (const entry of entries) {
-    if (!entry.name.endsWith(".md")) continue;
-    if (!entry.isFile() && !entry.isSymbolicLink()) continue;
-
-    const filePath = path.join(agentsDir, entry.name);
-    let content: string;
+    let entries: fs.Dirent[];
     try {
-      content = fs.readFileSync(filePath, "utf-8");
+      entries = fs.readdirSync(agentsDir, { withFileTypes: true });
     } catch {
       continue;
     }
 
-    const { frontmatter, body } =
-      parseFrontmatter<Record<string, string>>(content);
-    if (!frontmatter.name || !frontmatter.description) continue;
+    for (const entry of entries) {
+      if (!entry.name.endsWith(".md")) continue;
+      if (!entry.isFile() && !entry.isSymbolicLink()) continue;
 
-    // 解析 tools 列表（逗号分隔）
-    const tools = frontmatter.tools
-      ?.split(",")
-      .map((t: string) => t.trim())
-      .filter(Boolean);
+      const filePath = path.join(agentsDir, entry.name);
+      let content: string;
+      try {
+        content = fs.readFileSync(filePath, "utf-8");
+      } catch {
+        continue;
+      }
 
-    // tier 字段：ultra / pro / quick / visual / inherit，缺失为 undefined
-    const tier = frontmatter.tier?.trim() || undefined;
+      const { frontmatter, body } =
+        parseFrontmatter<Record<string, string>>(content);
+      if (!frontmatter.name || !frontmatter.description) continue;
+      if (seen.has(frontmatter.name)) continue; // 插件内置优先，跳过重复
+      seen.add(frontmatter.name);
 
-    agents.push({
-      name: frontmatter.name,
-      description: frontmatter.description,
-      tools: tools && tools.length > 0 ? tools : undefined,
-      tier,
-      systemPrompt: body,
-      filePath,
-    });
+      // 解析 tools 列表（逗号分隔）
+      const tools = frontmatter.tools
+        ?.split(",")
+        .map((t: string) => t.trim())
+        .filter(Boolean);
+
+      // tier 字段：ultra / pro / quick / visual / inherit，缺失为 undefined
+      const tier = frontmatter.tier?.trim() || undefined;
+
+      agents.push({
+        name: frontmatter.name,
+        description: frontmatter.description,
+        tools: tools && tools.length > 0 ? tools : undefined,
+        tier,
+        systemPrompt: body,
+        filePath,
+      });
+    }
   }
 
   return agents;
@@ -131,68 +141,73 @@ function parsePromptFrontmatter(
  * ```
  */
 export function discoverPrompts(): PromptConfig[] {
-  const promptsDir = path.join(getAgentDir(), "prompts");
   const prompts: PromptConfig[] = [];
+  const seen = new Set<string>(); // 按 name 去重（插件内置优先）
 
-  if (!fs.existsSync(promptsDir)) return prompts;
+  for (const promptsDir of getPromptDirs()) {
+    if (!fs.existsSync(promptsDir)) continue;
 
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(promptsDir, { withFileTypes: true });
-  } catch {
-    return prompts;
-  }
-
-  for (const entry of entries) {
-    if (!entry.name.endsWith(".md")) continue;
-    if (!entry.isFile() && !entry.isSymbolicLink()) continue;
-
-    const filePath = path.join(promptsDir, entry.name);
-    let content: string;
+    let entries: fs.Dirent[];
     try {
-      content = fs.readFileSync(filePath, "utf-8");
+      entries = fs.readdirSync(promptsDir, { withFileTypes: true });
     } catch {
       continue;
     }
 
-    const parsed = parsePromptFrontmatter(content);
-    if (!parsed || !parsed.frontmatter.name || !parsed.frontmatter.mode)
-      continue;
+    for (const entry of entries) {
+      if (!entry.name.endsWith(".md")) continue;
+      if (!entry.isFile() && !entry.isSymbolicLink()) continue;
 
-    const mode = parsed.frontmatter.mode as "single" | "parallel" | "chain";
-    if (!["single", "parallel", "chain"].includes(mode)) continue;
-
-    // 从 body 中提取第一个 JSON 代码块作为模板
-    const jsonMatch = parsed.body.match(/```json\s*\n([\s\S]*?)\n```/);
-    if (!jsonMatch) continue;
-
-    let template: Record<string, unknown>;
-    try {
-      template = JSON.parse(jsonMatch[1]);
-    } catch {
-      continue;
-    }
-
-    // 从 JSON 模板中提取 entries（支持 chain/tasks/单对象三种格式）
-    const promptEntries: Array<{ agent: string; task: string }> = [];
-    const items = (template.chain ?? template.tasks ?? [template]) as Array<
-      Record<string, string>
-    >;
-    for (const item of items) {
-      if (item.agent && item.task) {
-        promptEntries.push({ agent: item.agent, task: item.task });
+      const filePath = path.join(promptsDir, entry.name);
+      let content: string;
+      try {
+        content = fs.readFileSync(filePath, "utf-8");
+      } catch {
+        continue;
       }
+
+      const parsed = parsePromptFrontmatter(content);
+      if (!parsed || !parsed.frontmatter.name || !parsed.frontmatter.mode)
+        continue;
+
+      if (seen.has(parsed.frontmatter.name)) continue; // 插件内置优先，跳过重复
+      seen.add(parsed.frontmatter.name);
+
+      const mode = parsed.frontmatter.mode as "single" | "parallel" | "chain";
+      if (!["single", "parallel", "chain"].includes(mode)) continue;
+
+      // 从 body 中提取第一个 JSON 代码块作为模板
+      const jsonMatch = parsed.body.match(/```json\s*\n([\s\S]*?)\n```/);
+      if (!jsonMatch) continue;
+
+      let template: Record<string, unknown>;
+      try {
+        template = JSON.parse(jsonMatch[1]);
+      } catch {
+        continue;
+      }
+
+      // 从 JSON 模板中提取 entries（支持 chain/tasks/单对象三种格式）
+      const promptEntries: Array<{ agent: string; task: string }> = [];
+      const items = (template.chain ?? template.tasks ?? [template]) as Array<
+        Record<string, string>
+      >;
+      for (const item of items) {
+        if (item.agent && item.task) {
+          promptEntries.push({ agent: item.agent, task: item.task });
+        }
+      }
+
+      if (promptEntries.length === 0) continue;
+
+      prompts.push({
+        name: parsed.frontmatter.name,
+        mode,
+        param: parsed.frontmatter.param ?? "task",
+        description: parsed.frontmatter.description ?? "",
+        entries: promptEntries,
+      });
     }
-
-    if (promptEntries.length === 0) continue;
-
-    prompts.push({
-      name: parsed.frontmatter.name,
-      mode,
-      param: parsed.frontmatter.param ?? "task",
-      description: parsed.frontmatter.description ?? "",
-      entries: promptEntries,
-    });
   }
 
   return prompts;

@@ -31,7 +31,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type {
   AgentToolResult,
   ExtensionAPI,
@@ -52,7 +51,7 @@ import {
 import { formatResults } from "./runtime/formatting.ts";
 import { SubagentParams } from "./core/schemas.ts";
 import { appendSessionLog, finalizeSessionLog } from "./runtime/session-log.ts";
-import { stripSubagentOnlySection } from "./core/context.ts";
+import { stripSubagentOnlySection, resolveAgentFile } from "./core/context.ts";
 import { rebuildFromStatusFiles, closeRegistry } from "./registry/registry.ts";
 import { orphanRecovery } from "./registry/orphan-recovery.ts";
 import { startStuckDetector } from "./registry/stuck-detector.ts";
@@ -1058,9 +1057,13 @@ export default function (pi: ExtensionAPI) {
     /**
      * 读取 agent .md 的 body，剥离 subagent-only 段。
      * 文件不存在或读取失败返回 null。
+     *
+     * 走 resolveAgentFile 共享路径解析（插件内置 context/agents 优先，
+     * ~/.config/pi/agents 兼容用户自定义）。
      */
     function loadMainSessionAgentContext(agentName: string): string | null {
-      const agentPath = path.join(getAgentDir(), "agents", `${agentName}.md`);
+      const agentPath = resolveAgentFile(agentName);
+      if (!agentPath) return null;
       try {
         const content = fs.readFileSync(agentPath, "utf-8");
         return stripSubagentOnlySection(content);

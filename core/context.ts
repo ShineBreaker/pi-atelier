@@ -16,10 +16,77 @@
  *
  * HTML 注释是给解析器看的标记，LLM 不会复述。如果未来要切换到更
  * 结构化的标记（如 frontmatter 字段），只需修改这两个函数。
+ *
+ * ── 路径解析（2026 重构后）─────────────────────────────────────────
+ * agent/prompt .md 源文件已从 ~/.config/pi/agents/ 迁移到插件内置
+ * context/agents/。本模块提供统一的路径解析 helper，供 discovery.ts /
+ * launcher.ts / wrapper.sh 复用：
+ *   1. 插件内置 context/{agents,prompts}/ 优先（atelier 自包含 agent 定义）
+ *   2. getAgentDir()/{agents,prompts}/ 兼容用户自定义 agent
  */
+
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 const SUBAGENT_START = /<!--\s*@atelier:subagent\s*-->/;
 const SUBAGENT_END = /<!--\s*\/@atelier:subagent\s*-->/;
+
+// ─── 路径解析 helpers ─────────────────────────────────────────────────────────
+
+/**
+ * 解析插件内置资源根目录（atelier/）。
+ *
+ * 用 import.meta.url 定位当前模块（context.ts 在 atelier/core/），
+ * 向上一级就是 atelier/。jiti 加载扩展时保留真实文件路径，所以
+ * import.meta.url 反映磁盘上的真实位置（非内存虚拟模块）。
+ */
+export function getPluginRoot(): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+}
+
+/**
+ * agent .md 候选目录列表，按优先级排序：
+ *   1. 插件内置 context/agents/（atelier 自带 agent 定义）
+ *   2. getAgentDir()/agents/（用户自定义 agent，兼容旧路径）
+ */
+export function getAgentDirs(): string[] {
+  return [
+    path.join(getPluginRoot(), "context", "agents"),
+    path.join(getAgentDir(), "agents"),
+  ];
+}
+
+/**
+ * prompt .md 候选目录列表，按同上优先级排序。
+ */
+export function getPromptDirs(): string[] {
+  return [
+    path.join(getPluginRoot(), "context", "prompts"),
+    path.join(getAgentDir(), "prompts"),
+  ];
+}
+
+/**
+ * 按优先级查找指定 agent 名的 .md 文件，返回第一个存在的路径。
+ *
+ * 被 discovery.ts / launcher.ts / 主会话注入逻辑共用，
+ * 保证所有读取点走同一路径解析策略。
+ *
+ * @returns 找到的文件绝对路径；全部不存在返回 null
+ */
+export function resolveAgentFile(agentName: string): string | null {
+  for (const dir of getAgentDirs()) {
+    const candidate = path.join(dir, `${agentName}.md`);
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch {
+      /* 试下一个候选 */
+    }
+  }
+  return null;
+}
 
 /**
  * 检查文件中是否有 subagent-only 标记。
