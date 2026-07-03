@@ -142,3 +142,98 @@ subagent({...}) / /agentname
 - **CAPABILITY_SELF_CHECK**（`runtime/launcher.ts`）硬注入所有 subagent prompt——设计决策，所有 subagent 无条件获得能力自检。
 - 语法验证（容器无 tsc）：`host-spawn -- node --experimental-strip-types --check <file.ts>`（host node v22，类型剥离语法校验，抓语法/import 错误但不抓类型错误）。最终运行回归靠 `blue rebuild` + 跑 pi。
 - **禁止 AI agent 自行 `blue rebuild` / `guix system reconfigure`**（见仓库根 AGENTS.md）。
+
+## 提交与版本发布
+
+atelier 作为独立 pi-package（`github.com/ShineBreaker/pi-atelier`）发布，commit 与发版遵守以下约定。
+
+### Commit 拆分粒度
+
+**一个 commit 对应一个独立的原子变更点**。改了一处 bug + 顺手清理了一处死代码 + 改了一处文档 → 拆成 3 个 commit，不要合并。
+
+- **FIX** — 修复 bug，独立成 commit。哪怕只是 1 行（如 `registerRun` 漏传 `runDir`），也单独提交。
+- **FEATURE** — 新能力。一个 feature 一个 commit。如果一个 feature 跨多个文件（如路径解析涉及 `core/context.ts` + `core/discovery.ts` + `runtime/launcher.ts`），整组打包成 1 个 commit，因为它们逻辑上不可分。
+- **DOCS** — 文档改动独立成 commit，与代码 commit 分离，便于 `git log --grep=DOCS` 检索。
+- **UPDATE** — 依赖升级、版本 bump、submodule 指针更新。
+- **REFACTOR** — 重构（无功能变化）。与 FEATURE 严格区分：改完应通过原有测试。
+- **INITIAL** — 仓库首次引导。
+
+### Commit 消息格式
+
+```
+TYPE: (scope) 一句话标题
+
+详细说明：
+- 改动动机（为什么改）
+- 关键决策（与备选方案对比的理由）
+- 影响范围（哪些文件、哪些 API、是否需 migration）
+
+Refs: #issue (如有)
+```
+
+**风格约束**：
+
+- 标题 ≤ 72 字，使用中文句号结尾
+- `scope` 用文件名或目录名（如 `launcher.ts`、`路径解析`）
+- body 每行 ≤ 100 字，使用项目内统一的"动机 / 决策 / 影响"三段式
+- 涉及多文件时 body 列出文件清单 + 各自改动
+- **不要**用 `git commit -am` 一把梭，必须 `git add` 选择性暂存
+- **必须** GPG 签名：`git config commit.gpgsign=true` 已配置，使用现有密钥 `62711D5E9CCDEC6907CADBF88637132222571907`
+
+### CHANGELOG
+
+每次发版必须更新根目录的 `CHANGELOG.md`（[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格 + [语义化版本](https://semver.org/lang/zh-CN/)）。
+
+- **新增版本段**：在文件顶部 `## [X.Y.Z] - YYYY-MM-DD`，按 `### Fixed / ### Added / ### Changed / ### Removed / ### Deprecated / ### Security` 分类
+- **正文面向用户**：用业务语言描述变更带来的影响，不堆 API/行号
+- **附录面向开发者**：在版本段后加 `## 技术细节 / Migration Notes`（同文件或单独文件均可），含 schema 变更、path 兼容矩阵、已知问题
+- **关联 commit 表**：列出本版本所有 commit 哈希 + 标题 + scope，方便溯源
+- **早期版本**：文件底部保留各历史版本段（不要合并或删除），形成可追溯的发布史
+- **CI/CD 不强求**：手工维护即可（atelier 节奏手动发版，无 CI 流水线）
+
+### 版本号
+
+遵循 [语义化版本](https://semver.org/lang/zh-CN/) `MAJOR.MINOR.PATCH`：
+
+- **MAJOR**：破坏性 API 变更（schema 不兼容、行为语义变化、required 配置项新增）
+- **MINOR**：新功能（向后兼容）
+- **PATCH**：bug 修复（向后兼容）
+
+特殊情形：
+
+- 初始开发阶段（< 1.0.0）：可自由升降级，每次发版都视为潜在 MAJOR
+- `0.1.0` → `0.1.1`：仅 PATCH（仅 bug fix + 文档）
+- `0.1.1` → `0.2.0`：新能力（向后兼容）
+- `0.x.y` → `0.(x+1).0`：API 变更
+
+### 发版流程
+
+1. **整理 commit 历史**：`git log v0.X.Y..HEAD` 确认本次发版包含的 commit
+2. **更新 CHANGELOG.md**：在文件顶部新增 `## [X.Y.Z] - YYYY-MM-DD` 段，列出所有变更
+3. **bump package.json 版本号**：`UPDATE: (package.json) bump.` 单独 commit
+4. **创建 git tag**：`git tag -s v0.X.Z -m "atelier v0.X.Z"` （GPG 签名 tag）
+5. **推送**：先 `git push origin main`，再 `git push origin v0.X.Z`
+6. **GitHub Release**（可选）：在 GitHub UI 基于 tag 创建 release notes，可直接复制 CHANGELOG 段
+7. **父仓库 bump submodule 指针**（在 Guix-configs 父仓库）：单独 commit `UPDATE: (atelier) bump submodule → 0.X.Z`
+
+### 发版时 checklist
+
+```
+□ 所有目标 commit 已合并到 main
+□ CHANGELOG.md 顶部新增版本段，含 Fixed/Added/Changed 分类
+□ package.json version 已 bump
+□ 语法验证通过（node --experimental-strip-types --check 所有 .ts）
+□ 跨模块符号引用验证通过
+□ git tag -s vX.Y.Z 已创建
+□ 推送 main + tag
+□ 父仓库 submodule 指针已 bump
+```
+
+### 反模式（不要做）
+
+- 把多个不相关变更塞进 1 个 commit
+- 使用 `git commit -am "fix stuff"`（必须明确 add + 写有意义的消息）
+- 跳过 CHANGELOG 直接发版
+- 不 bump package.json 就发版
+- 改完代码不跑 `node --check` 就提交
+- 推送前未验证 submodule pointer（父仓库 bump 与子模块 HEAD 不一致会导致构建失败）
