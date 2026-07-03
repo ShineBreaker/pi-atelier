@@ -546,6 +546,30 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
+        // ── 空上下文：把 agent prompt 注入当前主会话的 systemPrompt ──────
+        //
+        // 语义：当主会话还没有任何 user 消息（首次对话）时，`/<agentname> <task>`
+        // 不启动独立 subagent pane，而是让主 agent 以该 agent 的身份直接执行 task。
+        // 实现：handler 写一个隐藏标记（CustomEntry，不进 LLM 上下文），
+        // before_agent_start hook 读到后把 agent prompt 追加到 systemPrompt。
+        //
+        // 非空上下文（已有对话历史）：维持原有行为，launchSingle 启动独立 subagent。
+        try {
+          const entries = ctx.sessionManager.getEntries();
+          const hasUserMessage = entries.some(
+            (e) =>
+              e.type === "message" &&
+              (e as { message?: { role?: string } }).message?.role === "user",
+          );
+          if (!hasUserMessage) {
+            pi.appendEntry("atelier:context-inject", { agent: agent.name });
+            pi.sendUserMessage(task);
+            return;
+          }
+        } catch {
+          // sessionManager 读取失败（不该发生）→ 降级走原 launchSingle 路径
+        }
+
         try {
           const startedAt = Date.now();
           // 解析 model 链：显式覆盖 > tier > defaultTier > inherit
@@ -1076,6 +1100,42 @@ export default function (pi: ExtensionAPI) {
       // 防止 subagent 递归
       if (process.env.PI_SUBAGENT) return;
 
+      // ── 1. 优先检查命令注入标记（/<agentname> 在空上下文下触发）──────
+      //
+      // 命令 handler 用 appendEntry("atelier:context-inject", { agent }) 写标记，
+      // 这里读到后把对应 agent 的 prompt 追加到 systemPrompt，并清除标记（一次性）。
+      // 命令注入优先级最高：覆盖默认的 worker/planner 逻辑。
+      try {
+        const entries = ctx.sessionManager.getEntries();
+        for (let i = entries.length - 1; i >= 0; i--) {
+          const e = entries[i] as {
+            type: string;
+            customType?: string;
+            data?: { agent?: string } | null;
+          };
+          if (e.type === "custom" && e.customType === "atelier:context-inject") {
+            const agentName = e.data?.agent;
+            if (agentName) {
+              const content = loadMainSessionAgentContext(agentName);
+              if (content) {
+                // 清除标记（一次性注入，避免后续每轮都注入）：
+                // appendEntry 同 customType 会产生新条目，hook 下次扫描时
+                // 最新条目的 data 为 null，走进 else 分支忽略。
+                pi.appendEntry("atelier:context-inject", null);
+                return {
+                  systemPrompt: event.systemPrompt + "\n\n" + content,
+                };
+              }
+            }
+            // data 为 null（已消费的标记）或 agent prompt 加载失败 → 继续走默认逻辑
+            break;
+          }
+        }
+      } catch {
+        // sessionManager 读取失败 → 降级走默认逻辑
+      }
+
+      // ── 2. 默认逻辑：plan→planner，其余→worker ──────────────────────
       const planMode = isPlanModeActive(ctx, event.systemPrompt);
       const agentName = planMode ? "planner" : "worker";
       const contextContent = loadMainSessionAgentContext(agentName);
