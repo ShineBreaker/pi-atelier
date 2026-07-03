@@ -385,6 +385,7 @@ export function launchSingle(
     runId,
     agent: agent.name,
     mode: "single",
+    runDir,
     taskExcerpt: task.slice(0, 200),
     isSystemSpawned: isSystemSpawned ?? isSystemAgent(agent.name),
     parentRunId,
