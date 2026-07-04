@@ -132,7 +132,7 @@ prompt → [1] 路由选 agent → [2] 上下文注入 → [3] 启动 subagent
 ### 7.1 Subagent 工具全链路
 
 ```
-用户: "改 dotfiles/enable/emacs/..."
+用户: "改 dotfiles/immutable/emacs/..."
   → atelier run (路由 → worker)
     → context-injector (注入 AGENTS.md + cwd)
       → subagent-tool (创建 task)

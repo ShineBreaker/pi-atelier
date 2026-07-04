@@ -54,7 +54,7 @@ atelier/
 │   ├── session-log.ts
 │   └── workfile.ts
 ├── .gitignore
-├── AGENTS.md
+├── CHANGELOG.md
 ├── LICENSE
 ├── README.md
 ├── index.ts
@@ -67,26 +67,27 @@ atelier/
 
 依赖方向无环：`core` ← `runtime` / `registry` / `lifecycle` ← `index`。
 
-| 目录          | 职责                                  | 关键文件                                                              |
-| ------------- | ------------------------------------- | --------------------------------------------------------------------- |
-| `core/`       | 配置/类型/发现（无外部循环依赖）       | `types.ts`（接口 + DEFAULT_CONFIG）、`config.ts`、`discovery.ts`、`schemas.ts`、`context.ts`（subagent-only 切片 + agent 路径解析）、`system-agents.ts` |
-| `context/`    | 插件内置 agent / prompt 模板（自包含） | `agents/*.md`（7 个 agent 定义）、`prompts/*.md`（7 个链路模板） |
-| `runtime/`    | 执行链路（tmux → 监控 → 编排）         | `launcher.ts`（tmux 分屏）、`monitor.ts`（轮询 + return-header 解析）、`runner.ts`（runChain/Parallel/Fallback）、`workfile.ts`、`session-log.ts`、`formatting.ts` |
-| `registry/`   | 状态索引与治理（SQLite + 恢复层）      | `registry.ts`（SQLite 全局索引）、`orphan-recovery.ts`、`stuck-detector.ts`、`return-header.ts`、`completion-gate.ts` |
-| `lifecycle/`  | 长程任务生命周期                       | `checkpoint.ts`（跨崩溃 checkpoint）、`workflow.ts`（可视化 workflow）、`resume.ts`（续跳） |
+| 目录         | 职责                                   | 关键文件                                                                                                                                                           |
+| ------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `core/`      | 配置/类型/发现（无外部循环依赖）       | `types.ts`（接口 + DEFAULT_CONFIG）、`config.ts`、`discovery.ts`、`schemas.ts`、`context.ts`（subagent-only 切片 + agent 路径解析）、`system-agents.ts`            |
+| `context/`   | 插件内置 agent / prompt 模板（自包含） | `agents/*.md`（7 个 agent 定义）、`prompts/*.md`（7 个链路模板）                                                                                                   |
+| `runtime/`   | 执行链路（tmux → 监控 → 编排）         | `launcher.ts`（tmux 分屏）、`monitor.ts`（轮询 + return-header 解析）、`runner.ts`（runChain/Parallel/Fallback）、`workfile.ts`、`session-log.ts`、`formatting.ts` |
+| `registry/`  | 状态索引与治理（SQLite + 恢复层）      | `registry.ts`（SQLite 全局索引）、`orphan-recovery.ts`、`stuck-detector.ts`、`return-header.ts`、`completion-gate.ts`                                              |
+| `lifecycle/` | 长程任务生命周期                       | `checkpoint.ts`（跨崩溃 checkpoint）、`workflow.ts`（可视化 workflow）、`resume.ts`（续跳）                                                                        |
 
 ## Agent / Prompt 路径解析
 
 agent/prompt `.md` 源文件位于插件内置 `context/{agents,prompts}/`（atelier 作为独立 pi-package 自包含）。所有读取点走 `core/context.ts` 的统一解析器：
 
-| 读取点                          | 用途                          | 解析方式                                    |
-| ------------------------------- | ----------------------------- | ------------------------------------------- |
-| `core/discovery.ts`             | `discoverAgents/discoverPrompts` | `getAgentDirs()/getPromptDirs()` 多目录扫描 |
-| `runtime/launcher.ts`           | `prepareAgentPrompt`（subagent 启动） | `resolveAgentFile(name)` 按优先级查找   |
-| `index.ts` `loadMainSessionAgentContext` | 主会话 worker/planner/reviewer 注入 | `resolveAgentFile(name)`                  |
-| `stow/pi/.local/share/pi/scripts/subagent-wrapper.sh` | `parse_agent_md`（pane 内 bash） | `resolve_agent_file()` 函数（与 TS 端策略一致） |
+| 读取点                                                | 用途                                  | 解析方式                                        |
+| ----------------------------------------------------- | ------------------------------------- | ----------------------------------------------- |
+| `core/discovery.ts`                                   | `discoverAgents/discoverPrompts`      | `getAgentDirs()/getPromptDirs()` 多目录扫描     |
+| `runtime/launcher.ts`                                 | `prepareAgentPrompt`（subagent 启动） | `resolveAgentFile(name)` 按优先级查找           |
+| `index.ts` `loadMainSessionAgentContext`              | 主会话 worker/planner/reviewer 注入   | `resolveAgentFile(name)`                        |
+| `stow/pi/.local/share/pi/scripts/subagent-wrapper.sh` | `parse_agent_md`（pane 内 bash）      | `resolve_agent_file()` 函数（与 TS 端策略一致） |
 
 **优先级**（同名 agent/prompt 按此顺序去重，先找到的赢）：
+
 1. 插件内置 `context/{agents,prompts}/`（atelier 自带定义）
 2. `getAgentDir()/{agents,prompts}/`（`~/.config/pi/agents/`，用户自定义，兼容旧路径）
 
