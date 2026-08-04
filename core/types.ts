@@ -58,6 +58,17 @@ export interface SubagentConfig {
   defaultTier: string;
   /** tier 名 → model + fallback 链的映射 */
   tiers: Record<string, AgentModelConfig>;
+  /**
+   * 模型使用时段限制（按模型名索引，跨 tier 生效）。
+   *
+   * 形状：`{ "zai/GLM-5.2": { deny: ["Mon-Fri 14:00-18:00"] } }`。
+   * resolveModelChain 按模型名查这份映射；被时段过滤掉的模型从尝试链
+   * 中跳过（每跳过一个 console.warn 一次）。未列出的模型不受限。
+   *
+   * 放在顶层而非 per-tier：同一个模型（如 GLM-5.2）可能作为多个 tier
+   * 的首选或 fallback 出现，per-model 让时段规则跟随模型本身而非 tier。
+   */
+  modelSchedules: Record<string, { allow?: string[]; deny?: string[] }>;
 }
 
 /** 单次 tmux pane 启动的结果 */
@@ -109,6 +120,7 @@ export const DEFAULT_CONFIG: SubagentConfig = {
   maxConcurrency: 4,
   defaultTier: "pro",
   tiers: {},
+  modelSchedules: {},
 };
 
 /** parallel 模式下，上方 subagent 行占窗口高度百分比 */

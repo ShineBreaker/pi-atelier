@@ -21,6 +21,10 @@ import type {
   SubagentConfig,
 } from "../core/types.ts";
 import {
+  parseSchedule,
+  isModelAllowedNow,
+} from "../core/schedule.ts";
+import {
   generateRunId,
   launchParallel,
   launchSingle,
@@ -83,14 +87,19 @@ export function readDefaultModelFromSettings(): string[] {
 const MAX_ATTEMPTS = 3;
 
 /**
- * 解析 agent 的完整模型尝试链：[首选, ...fallback]
+ * 解析 agent 的完整模型尝试链：[首选, ...fallback]，并按时段过滤
  *
  * 新优先级（自上而下短路）：
- *   1. 调用方显式覆盖（params.model）
+ *   1. 调用方显式覆盖（params.model）— 不过滤（用户显式指定，视为 override）
  *   2. agent frontmatter `tier: inherit` → 从 settings.json 读 defaultProvider/defaultModel 组成 ["provider/model"]，让 wrapper 日志如实显示当前模型
  *   3. agent frontmatter `tier: <name>` → 查 config.tiers[<name>]
  *   4. agent frontmatter 无 tier → 用 config.defaultTier
  *   5. 全部解析失败 → []（= inherit 行为，兜底跟随前台）
+ *
+ * 时段过滤（仅对 3/4 路径生效）：config.modelSchedules 按模型名声明
+ * 可用时段。链中每个模型各自查 modelSchedules[modelName]：落在禁用窗口
+ * 的模型被跳过，每跳过一个 console.warn 一次；全链被禁用 → 降级到
+ * readDefaultModelFromSettings() 并 warn（保证总有模型可用）。
  *
  * @returns model 列表（可空），空数组表示"不传 --model"
  */
@@ -99,7 +108,7 @@ export function resolveModelChain(
   config: SubagentConfig,
   explicitModel?: string,
 ): string[] {
-  // 1. 显式覆盖
+  // 1. 显式覆盖（不过滤——用户显式指定视为 override，包括时段限制）
   if (explicitModel) return [explicitModel];
 
   // 2-4. tier 解析
@@ -112,7 +121,39 @@ export function resolveModelChain(
   const tierCfg: AgentModelConfig | undefined = config.tiers[tier];
   if (!tierCfg) return []; // 未知 tier → 回退 []（让 subagent-wrapper 用自己的 defaultModel）
 
-  return [tierCfg.model, ...tierCfg.fallback].filter(Boolean);
+  const fullChain = [tierCfg.model, ...tierCfg.fallback].filter(Boolean);
+
+  // 无 modelSchedules → 不过滤
+  const schedules = config.modelSchedules;
+  if (!schedules || Object.keys(schedules).length === 0) return fullChain;
+
+  // 按模型查 per-model schedule，逐个过滤。每跳过一个禁用模型 warn 一次。
+  const usable: string[] = [];
+  for (const model of fullChain) {
+    const scheduleCfg = schedules[model];
+    if (!scheduleCfg) {
+      usable.push(model); // 该模型无 schedule → 不受限
+      continue;
+    }
+    const parsed = parseSchedule(scheduleCfg, model);
+    if (parsed.mode === "unrestricted" || isModelAllowedNow(parsed)) {
+      usable.push(model);
+    } else {
+      console.warn(
+        `[atelier:schedule] ${model} 当前时段被禁用（mode=${parsed.mode}），跳过`,
+      );
+    }
+  }
+
+  // 全链被禁用 → 降级 defaultModel，保证总有模型可用
+  if (usable.length === 0) {
+    console.warn(
+      `[atelier:schedule] tier=${tier} 所有模型当前时段均被禁用，降级到 settings.json defaultModel`,
+    );
+    return readDefaultModelFromSettings();
+  }
+
+  return usable;
 }
 
 /**

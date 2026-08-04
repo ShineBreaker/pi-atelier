@@ -86,6 +86,7 @@ export function loadConfig(): SubagentConfig {
         ? raw.defaultTier
         : DEFAULT_CONFIG.defaultTier,
     tiers: parseTiers(raw.tiers),
+    modelSchedules: parseModelSchedules(raw.modelSchedules),
   };
 }
 
@@ -101,6 +102,32 @@ function parseTiers(raw: unknown): Record<string, AgentModelConfig> {
       ? v.fallback.filter((f): f is string => typeof f === "string")
       : [];
     result[name] = { model: v.model, fallback };
+  }
+  return result;
+}
+
+/**
+ * 从 atelier.modelSchedules 段解析 per-model 时段限制。
+ *
+ * 形状：`{ "zai/GLM-5.2": { deny: ["Mon-Fri 14:00-18:00"] } }`。
+ * 非对象/缺字段 → 空对象（无限制）。条目语法错误由 schedule.ts 的
+ * parseSchedule 在运行时兜底（warn + unrestricted），此处只做结构过滤。
+ */
+function parseModelSchedules(
+  raw: unknown,
+): Record<string, { allow?: string[]; deny?: string[] }> {
+  if (!raw || typeof raw !== "object") return {};
+  const result: Record<string, { allow?: string[]; deny?: string[] }> = {};
+  for (const [model, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== "object") continue;
+    const v = value as { allow?: unknown; deny?: unknown };
+    const allow = Array.isArray(v.allow)
+      ? v.allow.filter((x): x is string => typeof x === "string")
+      : undefined;
+    const deny = Array.isArray(v.deny)
+      ? v.deny.filter((x): x is string => typeof x === "string")
+      : undefined;
+    if (allow || deny) result[model] = { allow, deny };
   }
   return result;
 }
