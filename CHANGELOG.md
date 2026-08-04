@@ -53,6 +53,9 @@ atelier 所有值得注意的变更都会记录在此文件。
 
 ### Removed
 
+- **移除弃用的 `/run-plan` + `/loop` 命令**：loopctl 前端薄包装，loopctl
+  本身已弃用（父仓 `5aae9f6e`），这两个命令入口随之删除。plan review gate
+  放行后用户直接按计划实施即可。
 - 删除 `load_subagents_config()`（读已废弃的 `~/.config/pi/subagents.json`，
   per-agent model 配置已被 tier 系统取代）。
 - 删除 `TOP_ROW_PERCENT` 常量（tmux 专有，ratio 化后不再需要）。
@@ -74,6 +77,7 @@ atelier 所有值得注意的变更都会记录在此文件。
 | `runtime/multiplexer/herdr.ts` | `6375075` | FEATURE: HerdrBackend |
 | `runtime/launcher.ts` | `ad79b4a` | REFACTOR: 改调 backend 接口 |
 | `scripts/subagent-wrapper.sh` | `48fd640` | FIX: KEEP_PANE 块 multiplexer 感知 |
+| `index.ts` | `8437de9` | REMOVE: 移除弃用的 /run-plan + /loop loopctl 命令 |
 
 ---
 
