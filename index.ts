@@ -60,18 +60,53 @@ import { loadWorkflow, listWorkflows } from "./lifecycle/workflow.ts";
 
 // ─── Plan Review Gate 提示词 ─────────────────────────────────────────────────
 //
-// 职责：拦截 plannotator_submit_plan，强制先让 oracle 审查计划。
-// 审查框架由 oracle 自带（假设检验、范围风险、架构一致性、替代方案），
-// 此处只需路由到 oracle，不重复定义审查维度。
+// 职责：拦截 plannotator_submit_plan，强制让主会话与用户做多轮对抗式诘问（grill），
+// 直到计划的所有关键假设、边界、权衡都被用户明确确认，才放行提交。
+//
+// 实现：把 context/agents/griller.md 的 grilling 方法论注入主会话 systemPrompt，
+// 让主 agent 扮演 griller 角色，逐个向用户提问（一次一个，每问附推荐答案）。
+// 用户确认达成共识后，再次调用 plannotator_submit_plan → 放行（reviewedPlans 跟踪）。
+//
+// 旧设计（委派 oracle subagent 一次性审查）已废弃：grilling 本质是主会话与用户的
+// 交互式流程，委派给独立 subagent 会丢失「逐个提问、等用户反馈」的交互闭环。
 
-const PLAN_REVIEW_GATE_PROMPT = [
-  "任务提交前需要先让 oracle 审查计划。",
-  "请调用 subagent 工具：",
-  'subagent(agent: "oracle", task: "审查以下实施计划的架构合理性和风险，提出建议。计划文件：<planFilePath>")',
-  "",
-  "审查完成后，如果计划需要修改请修改后再提交。",
-  "如果计划已通过审查，直接再次调用 plannotator_submit_plan 即可（不会再次被阻止）。",
-].join("\n");
+/**
+ * 构造 plan review gate 的拦截提示词。
+ *
+ * 把 griller 方法论（从 context/agents/griller.md 加载，剥离 frontmatter）
+ * 与计划文件路径拼成完整的诘问指令。griller.md 加载失败时降级为简短兜底指令。
+ */
+function buildPlanReviewGatePrompt(planFilePath: string): string {
+  const grillerBody = loadMainSessionAgentContext("griller");
+  const header = [
+    "⛔ 计划提交前需要先经过多轮对抗式诘问（grill）。",
+    "",
+    `请先完整阅读计划文件：${planFilePath}`,
+    "",
+    "然后以下方 griller 方法论为指导，对计划逐项压测——一次只问用户一个问题，",
+    "每个问题附带你的推荐答案。事实（代码、配置、文档）自己查证，只有需要用户",
+    "价值判断的决策才问用户。直到所有关键假设、边界、替代方案都被用户确认，",
+    "才允许再次调用 plannotator_submit_plan 提交（本次不会再被拦截）。",
+    "",
+    "═══════════════════════════════════════════════════════════",
+    "                    griller 方法论",
+    "═══════════════════════════════════════════════════════════",
+    "",
+  ].join("\n");
+
+  const grillerSection =
+    grillerBody ??
+    [
+      "（griller.md 加载失败，使用兜底诘问维度：）",
+      "1. 假设检验：计划基于哪些未经验证的假设？",
+      "2. 范围边界：遗漏了什么场景？边界条件怎么处理？",
+      "3. 替代方案：有没有更简单/更健壮的方法？",
+      "4. 架构一致：与现有模式冲突吗？",
+      "5. 回滚风险：不可逆步骤的风险和缓解措施？",
+    ].join("\n");
+
+  return header + "\n" + grillerSection;
+}
 
 // ─── Worker single 模式硬警告 ────────────────────────────────────────────────
 //
@@ -139,6 +174,25 @@ const makeDetails =
     mode,
     results,
   });
+
+/**
+ * 读取 agent .md 的 body，剥离 frontmatter + subagent-only 段。
+ * 文件不存在或读取失败返回 null。
+ *
+ * 模块级函数：被 buildPlanReviewGatePrompt（plan review gate）和
+ * before_agent_start 的 worker/planner 注入共用。走 resolveAgentFile 共享路径
+ * 解析（插件内置 context/agents 优先，~/.config/pi/agents 兼容用户自定义）。
+ */
+function loadMainSessionAgentContext(agentName: string): string | null {
+  const agentPath = resolveAgentFile(agentName);
+  if (!agentPath) return null;
+  try {
+    const content = fs.readFileSync(agentPath, "utf-8");
+    return stripSubagentOnlySection(content);
+  } catch {
+    return null;
+  }
+}
 
 // ─── Extension Entry ─────────────────────────────────────────────────────────
 
@@ -1078,24 +1132,6 @@ export default function (pi: ExtensionAPI) {
       return systemPrompt.includes(PLANNOTATOR_MARKER);
     }
 
-    /**
-     * 读取 agent .md 的 body，剥离 subagent-only 段。
-     * 文件不存在或读取失败返回 null。
-     *
-     * 走 resolveAgentFile 共享路径解析（插件内置 context/agents 优先，
-     * ~/.config/pi/agents 兼容用户自定义）。
-     */
-    function loadMainSessionAgentContext(agentName: string): string | null {
-      const agentPath = resolveAgentFile(agentName);
-      if (!agentPath) return null;
-      try {
-        const content = fs.readFileSync(agentPath, "utf-8");
-        return stripSubagentOnlySection(content);
-      } catch {
-        return null;
-      }
-    }
-
     pi.on("before_agent_start", (event, ctx) => {
       // 防止 subagent 递归
       if (process.env.PI_SUBAGENT) return;
@@ -1155,11 +1191,12 @@ export default function (pi: ExtensionAPI) {
 
   // ── Plan review gate ──────────────────────────────────────────────────
   //
-  // 流程：
-  //   1. 首次 plannotator_submit_plan → block，提示调 oracle 审查
-  //   2. oracle 审完后 LLM 再次调 plannotator_submit_plan → 放行
-  //   3. 放行时自动保存计划到 .agents/current-plan.md
-  //   4. 提示 LLM 通知用户执行 /run-plan（清空上下文，在新会话中执行计划）
+  // 流程（多轮对抗式诘问版）：
+  //   1. 首次 plannotator_submit_plan → block，注入 griller 方法论 +
+  //      计划路径，要求主会话与用户做多轮诘问（一次一个问题，每问附推荐答案）
+  //   2. 主会话与用户多轮对话，压测计划的假设/边界/替代方案/架构/回滚
+  //   3. 共识达成后，LLM 再次调 plannotator_submit_plan → 放行
+  //   4. 放行时自动保存计划到 .agents/current-plan.md
 
   {
     const reviewedPlans = new Set<string>();
@@ -1174,7 +1211,7 @@ export default function (pi: ExtensionAPI) {
       const planFilePath = event.input?.filePath as string | undefined;
       if (!planFilePath) return;
 
-      // 第二次调用（oracle 已审查）→ 放行并保存计划
+      // 第二次调用（诘问已完成）→ 放行并保存计划
       if (reviewedPlans.has(planFilePath)) {
         reviewedPlans.delete(planFilePath);
 
@@ -1187,22 +1224,21 @@ export default function (pi: ExtensionAPI) {
           });
           fs.writeFileSync(approvedPlanPath, planContent, "utf-8");
         } catch {
-          // 保存失败不阻塞，/run-plan 会报错提示
+          // 保存失败不阻塞
         }
 
         return {
           systemPrompt:
-            "✅ 计划已通过 oracle 审查并保存。" +
-            "请通知用户：执行 `/run-plan` 开始实施（将清空当前上下文，在新会话中执行计划）。" +
-            "如果用户不想清空上下文，也可以直接按计划执行。",
+            "✅ 计划已通过对抗式诘问并保存到 .agents/current-plan.md。" +
+            "现在可以开始按计划实施。",
         };
       }
 
-      // 首次调用 → block，提示调 oracle 审查
+      // 首次调用 → block，注入 griller 方法论，要求主会话与用户多轮诘问
       reviewedPlans.add(planFilePath);
       return {
         block: true,
-        reason: PLAN_REVIEW_GATE_PROMPT + planFilePath,
+        reason: buildPlanReviewGatePrompt(planFilePath),
       };
     });
     pi.on("session_shutdown", () => {
