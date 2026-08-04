@@ -30,7 +30,6 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
 import type {
   AgentToolResult,
   ExtensionAPI,
@@ -777,125 +776,6 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  // ── /run-plan 命令：loop 框架薄包装 ────────────────────────────────
-  // 读 .agents/current-plan.md → 归档 → loopctl start → step
-
-  pi.registerCommand("run-plan", {
-    description: "清空当前上下文，在新会话中执行已通过审查的计划",
-    handler: async (_args, ctx) => {
-      const planPath = path.join(ctx.cwd, ".agents", "current-plan.md");
-      const loopctlBin = "loopctl";
-
-      if (!fs.existsSync(planPath)) {
-        ctx.ui.notify(
-          "❌ 未找到已审查的计划。\n" +
-            "请先用 plannotator 生成计划并让 oracle 审查通过。",
-          "error",
-        );
-        return;
-      }
-
-      try {
-        execFileSync("which", [loopctlBin], {
-          encoding: "utf-8",
-        });
-      } catch {
-        ctx.ui.notify(
-          "❌ loopctl 未找到。请确认 ~/.local/bin/loopctl 存在且在 PATH 中。",
-          "error",
-        );
-        return;
-      }
-
-      // 读取 + 归档
-      let planContent: string;
-      try {
-        planContent = fs.readFileSync(planPath, "utf-8");
-      } catch (err) {
-        ctx.ui.notify(`❌ 读取计划失败: ${(err as Error).message}`, "error");
-        return;
-      }
-
-      const archiveDir = path.join(ctx.cwd, ".agents", "archive");
-      fs.mkdirSync(archiveDir, {
-        recursive: true,
-      });
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const archivePath = path.join(archiveDir, `plan-${timestamp}.md`);
-      try {
-        fs.renameSync(planPath, archivePath);
-      } catch (err) {
-        ctx.ui.notify(`❌ 归档计划失败: ${(err as Error).message}`, "error");
-        return;
-      }
-
-      // loopctl 启动 + 第一轮
-      const loopName = `plan-${timestamp}`;
-      try {
-        execFileSync(
-          loopctlBin,
-          [loopName, "start", "--task-file", archivePath, "--adapter", "pi"],
-          {
-            cwd: ctx.cwd,
-            encoding: "utf-8",
-          },
-        );
-        ctx.ui.notify(
-          `📋 计划已作为 loop "${loopName}" 启动，正在执行第一轮...`,
-          "info",
-        );
-        execFileSync(loopctlBin, [loopName, "step"], {
-          cwd: ctx.cwd,
-          encoding: "utf-8",
-          timeout: 600_000,
-          maxBuffer: 10 * 1024 * 1024,
-        });
-        ctx.ui.notify(`✅ Loop "${loopName}" 第一轮完成`, "info");
-      } catch (err: any) {
-        const output = (err.stdout || err.stderr || err.message) as string;
-        ctx.ui.notify(`❌ loopctl 错误: ${output.slice(0, 500)}`, "error");
-      }
-    },
-  });
-
-  // ── /loop 命令：loopctl 前端薄包装 ──────────────────────────────────
-
-  pi.registerCommand("loop", {
-    description: "loopctl 前端：管理跨 agent 长期迭代循环",
-    handler: async (args, ctx) => {
-      const loopctlBin = "loopctl";
-
-      try {
-        execFileSync("which", [loopctlBin], {
-          encoding: "utf-8",
-        });
-      } catch {
-        ctx.ui.notify(
-          "❌ loopctl 未找到。请确认 ~/.local/bin/loopctl 存在且在 PATH 中。",
-          "error",
-        );
-        return;
-      }
-
-      const trimmed = args.trim();
-      const cmdArgs: string[] = trimmed
-        ? trimmed.split(/\s+/)
-        : ["list", "--all"];
-
-      try {
-        const result = execFileSync(loopctlBin, cmdArgs, {
-          cwd: ctx.cwd,
-          encoding: "utf-8",
-          timeout: 600_000,
-          maxBuffer: 10 * 1024 * 1024,
-        });
-        ctx.ui.notify(result.trim() || "(无输出)", "info");
-      } catch (err: any) {
-        const output = (err.stdout || err.stderr || err.message) as string;
-        ctx.ui.notify(`❌ loopctl 错误: ${output.slice(0, 500)}`, "error");
-      }
-    },
-  });
   // ── /atelier-resume <parentRunId> ──────────────────────────────────────────
   // 从 checkpoint 续跳未完成的 chain 步骤：读 checkpoint → 把剩余 step 转
   // chainEntries → 调 runChain 真实 dispatch。
