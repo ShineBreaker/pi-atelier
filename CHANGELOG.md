@@ -5,6 +5,133 @@ atelier 所有值得注意的变更都会记录在此文件。
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.0] - 2026-08-04
+
+### Added
+
+- **herdr 多路复用器支持**：atelier 不再 tmux 专有。新增 `runtime/multiplexer/`
+  抽象层（`MultiplexerBackend` 接口 + `TmuxBackend` + `HerdrBackend`），
+  `detectBackend()` 按 `HERDR_ENV=1`/`$TMUX` 自动选择。在 herdr 内运行 pi 时，
+  subagent 通过 `herdr pane split/run/close` 可视化执行，行为对等 tmux 路径。
+
+- **模型使用时间限制**：新增 `core/schedule.ts` DSL 解析器 + `runner.ts`
+  `resolveModelChain` 时段过滤。配置在 `atelier.json` 的 `modelSchedules` 字段
+  （按模型名索引，跨 tier 生效）：`{ "zai/GLM-5.2": { "deny": ["Mon-Fri 14:00-18:00"] } }`。
+  落在禁用窗口的模型自动跳过（每跳过一个 console.warn），全链禁用时降级
+  defaultModel。支持 `allow`/`deny`、星期段（`Mon-Fri`/`Sat,Sun`）、跨午夜
+  （`22:00-08:00` 自动展开）。
+
+- **独立配置文件**：atelier 配置可从 `~/.config/pi/atelier.json` 加载
+  （整文件即配置，优先级最高），不再强制塞在 `settings.json` 的 `atelier`
+  字段里。两种路径共存，向后兼容。
+
+- **griller agent + 对抗式诘问**：新增 `context/agents/griller.md`，承载
+  grilling 方法论（逐个提问、决策树遍历、每问附推荐答案、事实查环境）。
+
+- **脚本内化**：`subagent-wrapper.sh` + `extract-pi-result.py` 从外部
+  `stow/pi/.local/share/pi/scripts/` 内化到插件 `scripts/` 目录。恢复
+  0.1.1→0.2.0 之间因外部脚本丢失导致的功能性损坏，让 atelier 成为自包含
+  pi-package。
+
+### Changed
+
+- **Plan review gate 重构**：拦截 `plannotator_submit_plan` 后，不再委派
+  oracle subagent 做一次性审查，改为把 `griller.md` 方法论注入主会话
+  systemPrompt，让主 agent 与用户做多轮对抗式诘问（一次一个问题，每问附
+  推荐答案），达成共识后才放行提交。grilling 本质是主会话交互式流程，
+  委派给独立 subagent 会丢失「逐个提问、等用户反馈」的闭环。
+
+- **launcher 去 tmux 硬编码**：`launchSingle`/`launchParallel` 改调
+  `MultiplexerBackend` 接口，删除 `tmuxExec`/`splitAboveCurrentPane` 等
+  tmux 专有函数。`paneIsAlive`/`killPane` 保留为公共导出（monitor/runner
+  multiplexer 无关），改为薄包装委托 `detectBackend()`。
+
+### Fixed
+
+- **subagent-wrapper.sh KEEP_PANE 多路复用器感知**：`PI_SUBAGENT_KEEP_PANE=1`
+  的 pane 保留检查从仅 `$TMUX` 扩展为 `$TMUX || $HERDR_ENV`，herdr 内也生效。
+
+### Removed
+
+- 删除 `load_subagents_config()`（读已废弃的 `~/.config/pi/subagents.json`，
+  per-agent model 配置已被 tier 系统取代）。
+- 删除 `TOP_ROW_PERCENT` 常量（tmux 专有，ratio 化后不再需要）。
+
+### 关联提交
+
+| 范围 | Commit | 说明 |
+| ---- | ------ | ---- |
+| `core/config.ts` | `caf6b1d` | FEATURE: 支持 atelier.json 独立配置文件 |
+| `core/schedule.ts` | `556d90a` | FEATURE: 时间窗口 DSL 解析器 |
+| `runtime/runner.ts` | `df607d6` | FEATURE: resolveModelChain 按时段过滤模型 |
+| `context/agents/griller.md` | `e0b1445` | FEATURE: grilling 方法论 agent 定义 |
+| `index.ts` | `e5af262` | REFACTOR: plan review gate 改为注入 grill 方法论 |
+| `scripts/` | `6382ef2` | FEATURE: 内化 wrapper + extract 脚本 |
+| `runtime/launcher.ts` | `d1ab274` | REFACTOR: wrapper 路径改从 plugin root 解析 |
+| `scripts/subagent-wrapper.sh` | `edd62b2` | CLEANUP: 移除 legacy subagents.json + 硬编码路径 |
+| `runtime/multiplexer/types.ts` | `9972ce8` | REFACTOR: 抽 MultiplexerBackend 接口 |
+| `runtime/multiplexer/tmux.ts` | `a402b70` | REFACTOR: 迁出 TmuxBackend |
+| `runtime/multiplexer/herdr.ts` | `6375075` | FEATURE: HerdrBackend |
+| `runtime/launcher.ts` | `ad79b4a` | REFACTOR: 改调 backend 接口 |
+| `scripts/subagent-wrapper.sh` | `48fd640` | FIX: KEEP_PANE 块 multiplexer 感知 |
+
+---
+
+## 技术细节 / Migration Notes
+
+### 1. 配置迁移（settings.json → atelier.json）
+
+旧配置（`settings.json` 内）：
+```json
+{ "atelier": { "defaultTier": "pro", "tiers": {...} } }
+```
+
+新配置（`~/.config/pi/atelier.json`，推荐）：
+```json
+{
+  "defaultTier": "pro",
+  "tiers": { "ultra": { "model": "...", "fallback": [...] }, ... },
+  "modelSchedules": { "zai/GLM-5.2": { "deny": ["Mon-Fri 14:00-18:00"] } }
+}
+```
+
+`config.ts` 查找顺序：atelier.json > agent dir/settings.json > ~/.config/pi/settings.json。
+旧的 settings.json#atelier 仍生效（向后兼容），但建议迁移到独立文件。
+
+### 2. 多路复用器后端
+
+新增 `runtime/multiplexer/`：
+- `types.ts` — `MultiplexerBackend` 接口（currentPaneId/splitAbove/splitRight/setTitle/refocus/isAlive/kill）
+- `detect.ts` — 按 `HERDR_ENV=1`/`$TMUX` 选择后端
+- `tmux.ts` — tmux 实现（从 launcher.ts 迁出，行为字节级一致）
+- `herdr.ts` — herdr 实现（split 两步：pane split + pane run；kill=pane close）
+
+差异接受：tmux 新 pane 在主 pane 上方，herdr 在下方。monitor.ts 基于
+status.json 文件轮询，multiplexer 无关，零改动。
+
+### 3. 脚本内化路径变化
+
+| 旧路径（已废弃） | 新路径 |
+| ---- | ---- |
+| `$XDG_DATA_HOME/pi/scripts/subagent-wrapper.sh` | `<plugin>/scripts/subagent-wrapper.sh` |
+| `$XDG_DATA_HOME/pi/scripts/extract-pi-result.py` | `<plugin>/scripts/extract-pi-result.py` |
+
+`launcher.ts` 的 `getScriptsDir()` 改用 `getPluginRoot()/scripts`。
+wrapper 内的 `PLUGIN_AGENTS_DIR` 从硬编码 XDG 改为 `SCRIPT_DIR/../context/agents`。
+
+### 4. 兼容性矩阵
+
+| 项 | 0.1.1 | 0.2.0 |
+| ---- | ---- | ---- |
+| 多路复用器 | tmux only | tmux + herdr |
+| 配置文件 | settings.json#atelier | atelier.json（+ 旧路径兼容） |
+| 模型时段限制 | 无 | modelSchedules（allow/deny DSL） |
+| plan review gate | 委派 oracle subagent | 主会话多轮 grill |
+| 脚本位置 | 外部 stow 部署 | 插件内置 scripts/ |
+| schema 版本 | v2 | v2（无变化） |
+
+---
+
 ## [0.1.1] - 2026-07-03
 
 ### Fixed
@@ -142,5 +269,6 @@ USER_AGENTS_DIR="$XDG_CONFIG_HOME/pi/agents"
 - checkpoint / resume / workflow 长程任务恢复
 - CAPABILITY_SELF_CHECK + Return Header 协议
 
+[0.2.0]: https://github.com/ShineBreaker/pi-atelier/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/ShineBreaker/pi-atelier/compare/162d0fe...v0.1.1
 [0.1.0]: https://github.com/ShineBreaker/pi-atelier/releases/tag/v0.1.0
