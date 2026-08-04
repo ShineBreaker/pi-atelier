@@ -24,7 +24,11 @@ import type {
   SubagentConfig,
 } from "../core/types.ts";
 import { TOP_ROW_PERCENT } from "../core/types.ts";
-import { removeSubagentOnlyMarkers, resolveAgentFile } from "../core/context.ts";
+import {
+  getPluginRoot,
+  removeSubagentOnlyMarkers,
+  resolveAgentFile,
+} from "../core/context.ts";
 import { registerRun } from "../registry/registry.ts";
 import { formatReturnHeaderInstruction } from "../registry/return-header.ts";
 import { isSystemAgent } from "../core/system-agents.ts";
@@ -33,12 +37,6 @@ import { isSystemAgent } from "../core/system-agents.ts";
 
 function resolveXdgCache(): string {
   return process.env.XDG_CACHE_HOME ?? path.join(os.homedir(), ".cache");
-}
-
-function resolveXdgData(): string {
-  return (
-    process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share")
-  );
 }
 
 /** 所有运行数据的根目录 */
@@ -51,9 +49,14 @@ export function getRunDir(runId: string): string {
   return path.join(getSubagentsDir(), runId);
 }
 
-/** wrapper 脚本所在目录 */
+/**
+ * wrapper 脚本所在目录（插件内置 scripts/）。
+ *
+ * 脚本内化后跟随插件位置：getPluginRoot()/scripts/。不再依赖外部
+ * XDG_DATA_HOME 部署（旧路径已失效）。匹配 context/agents/ 的自包含模式。
+ */
 function getScriptsDir(): string {
-  return path.join(resolveXdgData(), "pi", "scripts");
+  return path.join(getPluginRoot(), "scripts");
 }
 
 // ─── Tmux 命令封装 ──────────────────────────────────────────────────────────
