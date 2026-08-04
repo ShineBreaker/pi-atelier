@@ -4,7 +4,7 @@
 #
 # SPDX-License-Identifier: MIT
 
-# subagent-wrapper.sh — tmux pane 内的 subagent 执行包装
+# subagent-wrapper.sh — 多路复用器（tmux/herdr）pane 内的 subagent 执行包装
 # 用法: subagent-wrapper.sh <run-id> <agent-name> <task-file> [--model <m>] [--cwd <d>] [--tools <list>]
 
 set -euo pipefail
@@ -288,7 +288,7 @@ write_status "$FINAL_STATUS" "$EXIT_CODE" "$STARTED_AT" "$FINISHED_AT" "$ERROR_M
 
 # PR-7：验证 result.md 顶部是否是 Return Header。若缺，写 stderr 警告（不阻塞返回）。
 # atelier 侧的 monitor.ts 仍能 parse → 返回 null → 标 return_status="unknown"。
-# wrapper 层只做轻量提示，便于 tmux pane 内肉眼诊断。
+# wrapper 层只做轻量提示，便于 pane 内肉眼诊断（tmux/herdr 通用）。
 if [[ -f "$result_file" ]]; then
 	first_line="$(head -n 1 "$result_file" 2>/dev/null || true)"
 	if [[ "$first_line" != *"**"*"Status"*"**"*":"* ]]; then
@@ -303,7 +303,10 @@ if [[ -n "${TMP_PROMPT:-}" && -f "$TMP_PROMPT" ]]; then
 	rm -f "$TMP_PROMPT"
 fi
 
-if [[ -n "${TMUX:-}" && "${PI_SUBAGENT_KEEP_PANE:-0}" == "1" ]]; then
+# === KEEP_PANE（multiplexer 感知）===
+# PI_SUBAGENT_KEEP_PANE=1 时，subagent 完成后保留 pane 打开供 post-mortem 检查。
+# 支持 tmux（$TMUX）和 herdr（$HERDR_ENV）两种多路复用器。
+if [[ ( -n "${TMUX:-}" || "${HERDR_ENV:-}" == "1" ) && "${PI_SUBAGENT_KEEP_PANE:-0}" == "1" ]]; then
 	if [[ "$FINAL_STATUS" == "completed" ]]; then
 		status_color="$c_green"
 	else
