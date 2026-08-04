@@ -122,6 +122,3 @@ export const DEFAULT_CONFIG: SubagentConfig = {
   tiers: {},
   modelSchedules: {},
 };
-
-/** parallel 模式下，上方 subagent 行占窗口高度百分比 */
-export const TOP_ROW_PERCENT = "40";

@@ -3,15 +3,17 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Tmux 启动器 — 通过 tmux split-window 创建子 pane 运行 subagent
+ * Subagent 启动器 — 通过多路复用器（tmux/herdr）创建子 pane 运行 subagent
  *
  * 布局策略：
- *   single:  在当前 pane 上方创建一个子 pane（占 40%）
- *   parallel: 先创建上方行，再水平分割为 N 个等宽子 pane
+ *   single:  在当前 pane 上方/下方创建一个子 pane（占 40%）
+ *   parallel: 先创建顶部/底部行，再水平分割为 N 个等宽子 pane
  *   chain:    复用 single，每步在前一步的 pane 位置继续分割
+ *
+ * 多路复用器抽象：具体 tmux/herdr 操作由 MultiplexerBackend 实现，
+ * detectBackend() 按 HERDR_ENV/$TMUX 环境变量自动选择。launcher 只调接口。
  */
 
-import { execFileSync } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -23,7 +25,6 @@ import type {
   StatusFile,
   SubagentConfig,
 } from "../core/types.ts";
-import { TOP_ROW_PERCENT } from "../core/types.ts";
 import {
   getPluginRoot,
   removeSubagentOnlyMarkers,
@@ -32,6 +33,8 @@ import {
 import { registerRun } from "../registry/registry.ts";
 import { formatReturnHeaderInstruction } from "../registry/return-header.ts";
 import { isSystemAgent } from "../core/system-agents.ts";
+import { detectBackend } from "./multiplexer/detect.ts";
+import type { MultiplexerBackend } from "./multiplexer/types.ts";
 
 // ─── XDG 路径 ────────────────────────────────────────────────────────────────
 
@@ -59,26 +62,14 @@ function getScriptsDir(): string {
   return path.join(getPluginRoot(), "scripts");
 }
 
-// ─── Tmux 命令封装 ──────────────────────────────────────────────────────────
+// ─── 多路复用器封装 ──────────────────────────────────────────────────────────
+//
+// launcher 内部用 detectBackend() 获取当前后端实例（tmux/herdr），调接口
+// 完成 pane 控制。paneIsAlive/killPane 作为公共导出保留——monitor.ts 和
+// runner.ts 基于 status.json 文件轮询（multiplexer 无关），它们通过这两个
+// 薄包装间接调后端，无需感知具体实现。
 
-/** 同步执行 tmux 命令，返回 stdout */
-function tmuxExec(args: string[]): string {
-  return execFileSync("tmux", args, {
-    encoding: "utf-8",
-    stdio: ["pipe", "pipe", "pipe"],
-  }).trim();
-}
-
-/** 同步执行 tmux 命令，失败返回 null */
-function tmuxExecMaybe(args: string[]): string | null {
-  try {
-    return tmuxExec(args);
-  } catch {
-    return null;
-  }
-}
-
-/** Shell 单引号转义 */
+/** Shell 单引号转义（buildWrapperCmd 用） */
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
@@ -154,17 +145,23 @@ export function writeFailedStatus(
   );
 }
 
-/** 检查 tmux pane 是否仍存活 */
+/**
+ * 检查 pane 是否仍存活（multiplexer 无关）。
+ *
+ * 公共导出：monitor.ts（pane 死亡检测）和 runner.ts（parallel batch 续接
+ * 前检查 pane 存活）调用。内部委托 detectBackend()。
+ */
 export function paneIsAlive(paneId: string): boolean {
-  return (
-    tmuxExecMaybe(["display-message", "-p", "-t", paneId, "#{pane_id}"]) ===
-    paneId
-  );
+  return detectBackend().isAlive(paneId);
 }
 
-/** 终止 tmux pane */
+/**
+ * 终止 pane（multiplexer 无关）。
+ *
+ * 公共导出：monitor.ts（abort/timeout 清理）调用。内部委托 detectBackend()。
+ */
 export function killPane(paneId: string): void {
-  tmuxExecMaybe(["kill-pane", "-t", paneId]);
+  detectBackend().kill(paneId);
 }
 
 /** 创建 run 目录并写入初始状态 */
@@ -312,51 +309,16 @@ function buildWrapperCmd(
   return [wrapper, ...args].map(shellQuote).join(" ");
 }
 
-// ─── 分屏操作 ────────────────────────────────────────────────────────────────
-
-/** 在当前 pane **上方**垂直分割一个新 pane，返回新 pane ID */
-function splitAboveCurrentPane(cmd: string): string {
-  return tmuxExec([
-    "split-window",
-    "-v", // 垂直分割
-    "-b", // 在当前 pane 之前（上方）
-    "-p",
-    TOP_ROW_PERCENT,
-    "-P", // 打印新 pane 信息
-    "-F",
-    "#{pane_id}",
-    cmd,
-  ]);
-}
-
-/** 在指定 pane **右侧**水平分割一个新 pane，返回新 pane ID */
-function splitRightOfPane(
-  targetPaneId: string,
-  cmd: string,
-  percent: number,
-): string {
-  return tmuxExec([
-    "split-window",
-    "-t",
-    targetPaneId,
-    "-h", // 水平分割
-    "-p",
-    String(Math.max(10, Math.min(90, percent))),
-    "-P",
-    "-F",
-    "#{pane_id}",
-    cmd,
-  ]);
-}
-
 // ─── 启动函数 ─────────────────────────────────────────────────────────────────
 
 /**
  * 启动单个 subagent。
  *
  * 布局：
- *   - 无 topRowTargetPaneId → 在当前 pane 上方垂直分割
+ *   - 无 topRowTargetPaneId → 在当前 pane 上方/下方垂直分割（后端决定方向）
  *   - 有 topRowTargetPaneId → 在指定 pane 右侧水平分割（chain 模式复用）
+ *
+ * splitPercent 是 tmux 时代的 API（0-100），内部转 ratio（0-1）给后端。
  */
 export function launchSingle(
   agent: AgentConfig,
@@ -372,12 +334,11 @@ export function launchSingle(
   // PR-10: chain / parallel batch 的 parent run id,关联到 atelier_runs.parent_run_id
   parentRunId?: string,
 ): LaunchResult {
-  if (!process.env.TMUX) {
-    throw new Error("atelier requires Pi to run inside a tmux session");
-  }
+  // detectBackend 抛错覆盖了原 process.env.TMUX 检查（tmux/herdr 都不在才抛）
+  const backend: MultiplexerBackend = detectBackend();
 
   cleanupOldRuns(config);
-  const myPaneId = tmuxExec(["display-message", "-p", "#{pane_id}"]);
+  const myPaneId = backend.currentPaneId();
   const runId = generateRunId();
   const runDir = getRunDir(runId);
   prepareRunDir(runDir, task);
@@ -406,13 +367,15 @@ export function launchSingle(
     promptFile ?? undefined,
   );
 
+  // splitPercent (0-100) → ratio (0-1)
+  const ratio = splitPercent / 100;
   const paneId = topRowTargetPaneId
-    ? splitRightOfPane(topRowTargetPaneId, cmd, splitPercent)
-    : splitAboveCurrentPane(cmd);
+    ? backend.splitRight(topRowTargetPaneId, cmd, ratio)
+    : backend.splitAbove(cmd, ratio);
 
   // 设置 pane 标题并切回主 pane
-  tmuxExec(["select-pane", "-t", paneId, "-T", paneTitle]);
-  tmuxExec(["select-pane", "-t", myPaneId]);
+  backend.setTitle(paneId, paneTitle);
+  backend.refocus(myPaneId);
 
   return { runId, runDir, paneId, paneTitle, agent };
 }
@@ -421,10 +384,10 @@ export function launchSingle(
  * 并行启动多个 subagent。
  *
  * 布局（修正后）：
- *   1. 第一个 task → 在当前 pane 上方垂直分割，创建顶部行
- *   2. 后续 task → 在前一个 pane 右侧水平分割，填满顶部行
+ *   1. 第一个 task → 在当前 pane 上方/下方垂直分割，创建顶部/底部行
+ *   2. 后续 task → 在前一个 pane 右侧水平分割，填满该行
  *
- * 效果：
+ * 效果（tmux 上方布局示意；herdr 新 pane 在下方，纯界面差异）：
  *   ┌──────────┬──────────┐
  *   │  sa1     │  sa2     │   ← 上方 40% 行，水平等分
  *   ├──────────┴──────────┤
@@ -441,12 +404,11 @@ export function launchParallel(
   // PR-10: parallel batch 的 parent run id,关联到 atelier_runs.parent_run_id
   parentRunId?: string,
 ): LaunchResult[] {
-  if (!process.env.TMUX) {
-    throw new Error("atelier requires Pi to run inside a tmux session");
-  }
+  // detectBackend 抛错覆盖了原 process.env.TMUX 检查
+  const backend: MultiplexerBackend = detectBackend();
 
   cleanupOldRuns(config);
-  const myPaneId = tmuxExec(["display-message", "-p", "#{pane_id}"]);
+  const myPaneId = backend.currentPaneId();
   const results: LaunchResult[] = [];
   const count = tasks.length;
 
@@ -489,26 +451,24 @@ export function launchParallel(
 
     let paneId: string;
     if (i === 0 && !existingTopRowPaneId) {
-      // 第一个且无已有顶部行：在当前 pane 上方垂直分割，创建顶部行
-      paneId = splitAboveCurrentPane(cmd);
+      // 第一个且无已有顶部行：在当前 pane 上方/下方垂直分割，创建行
+      // splitAbove 的 ratio 由后端决定具体占比（tmux/herdr 都用 0.4）
+      paneId = backend.splitAbove(cmd, 0.4);
     } else if (i === 0 && existingTopRowPaneId) {
-      // 跨 batch 续接：在已有顶部行最右 pane 右侧水平分割
-      paneId = splitRightOfPane(
-        existingTopRowPaneId,
-        cmd,
-        Math.round((count / (count + 1)) * 100),
-      );
+      // 跨 batch 续接：在已有行最右 pane 右侧水平分割
+      const ratio = count / (count + 1);
+      paneId = backend.splitRight(existingTopRowPaneId, cmd, ratio);
     } else {
       // 后续：在前一个 pane 右侧水平分割，自动计算等分比例
-      const pct = Math.round(((count - i) / (count - i + 1)) * 100);
-      paneId = splitRightOfPane(results[i - 1].paneId, cmd, pct);
+      const ratio = (count - i) / (count - i + 1);
+      paneId = backend.splitRight(results[i - 1].paneId, cmd, ratio);
     }
 
-    tmuxExec(["select-pane", "-t", paneId, "-T", paneTitle]);
+    backend.setTitle(paneId, paneTitle);
     results.push({ runId, runDir, paneId, paneTitle, agent });
   }
 
   // 切回主 pane
-  tmuxExec(["select-pane", "-t", myPaneId]);
+  backend.refocus(myPaneId);
   return results;
 }
