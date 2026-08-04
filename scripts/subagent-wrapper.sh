@@ -54,8 +54,10 @@ RUN_DIR="$XDG_CACHE_HOME/pi/subagents/$RUN_ID"
 
 # agent .md 候选目录（多路径回退，与 TS 端 resolveAgentFile 策略一致）：
 #   1. 插件内置 atelier/context/agents（自包含 agent 定义）
+#      脚本内化后跟随插件位置：scripts/ → ../context/agents
 #   2. 用户自定义 ~/.config/pi/agents（兼容旧路径）
-PLUGIN_AGENTS_DIR="$XDG_CONFIG_HOME/pi/extensions/atelier/context/agents"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_AGENTS_DIR="$SCRIPT_DIR/../context/agents"
 USER_AGENTS_DIR="$XDG_CONFIG_HOME/pi/agents"
 
 # 按优先级查找 agent .md 文件，输出第一个存在的路径
@@ -168,33 +170,7 @@ parse_agent_md() {
 	fi
 }
 
-# 从 subagents.json 加载模型配置（如果 --model 未被调用方显式指定）
-load_subagents_config() {
-	local config_file="$XDG_CONFIG_HOME/pi/subagents.json"
-	if [[ -z "$MODEL" && -f "$config_file" ]]; then
-		local agent_model
-		agent_model="$(
-			python3 - "$config_file" "$AGENT_NAME" <<'PY'
-import json
-import sys
-
-config_path, agent_name = sys.argv[1:3]
-try:
-    data = json.load(open(config_path, encoding="utf-8"))
-    agent_cfg = data.get("agents", {}).get(agent_name, {})
-    model = agent_cfg.get("model", "")
-    if model:
-        print(model)
-except Exception:
-    pass
-PY
-		)"
-		[[ -n "$agent_model" ]] && MODEL="$agent_model"
-	fi
-}
-
 parse_agent_md
-load_subagents_config
 
 # 读取任务文件
 TASK_TEXT="$(cat "$TASK_FILE")" || die "failed to read task file" 1
