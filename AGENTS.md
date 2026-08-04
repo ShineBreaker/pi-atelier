@@ -122,7 +122,7 @@ subagent({...}) / /agentname
 ## Registry / 持久化层
 
 - **status.json 是 single source of truth**；SQLite registry（`$XDG_DATA_HOME/pi/atelier-registry.db`）是查询视图，崩溃可丢（删 .db 下次启动 `rebuildFromStatusFiles` 自动重建）。
-- 用 Node 22+ 内置 `node:sqlite`（实验性，pi 启动时压制 ExperimentalWarning），零新依赖。
+- 用 pi 运行时（Bun）内置的 `bun:sqlite`（非 `node:sqlite`——pi 是 Bun 单文件构建，不提供 `node:sqlite` 模块）。零新依赖，非实验性 API。
 - 启动三步（best-effort，不阻塞扩展加载）：`rebuildFromStatusFiles` → `orphanRecovery` → `startStuckDetector`（后台 fiber，`unref` 不阻塞退出）。
 - schema 演进：`SCHEMA_VERSION` + `migrate()`（`PRAGMA user_version` + `ALTER TABLE ADD COLUMN`）。
 

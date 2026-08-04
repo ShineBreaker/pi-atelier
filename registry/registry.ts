@@ -14,15 +14,16 @@
  * 不动 wrapper.sh / extract-pi-result.py —— 它们只写 status.json，
  * 完全不知 SQLite 存在。本模块是 atelier 侧唯一的 SQLite writer。
  *
- * 技术决策：用 Node 22+ 内置 `node:sqlite` 而非 better-sqlite3，
- * 零新依赖；node:sqlite 是实验性 API 但 Schema/CRUD 子集已稳定。
- * 通过 `--no-warnings=ExperimentalWarning` 抑制启动噪音（pi 自身压制）。
+ * 技术决策：用 pi 运行时（Bun）内置的 `bun:sqlite` 而非 better-sqlite3，
+ * 零新依赖。pi 是 Bun 单文件构建（JavaScriptCore），不提供 `node:sqlite`；
+ * `bun:sqlite` 的 Schema/CRUD 子集（exec/prepare/all/get/run/close/PRAGMA）
+ * 与原 node:sqlite 用法完全一致。
  */
 
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { Database as DatabaseSync } from "bun:sqlite";
 import type { StatusFile } from "../core/types.ts";
 
 // ─── 常量 ────────────────────────────────────────────────────────────────────
@@ -50,12 +51,7 @@ const TASK_EXCERPT_MAX = 200;
  * wrapper 终态写入（completed/failed）会覆盖 orphan/stuck，无需特殊处理。
  */
 export type RunStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "orphan"
-  | "stuck";
+  "pending" | "running" | "completed" | "failed" | "orphan" | "stuck";
 
 /** `registerRun` 的输入参数。`startedAt`/`lastTurnAt` 不传则用 now。 */
 export interface RegisterRunInput {
@@ -283,20 +279,29 @@ function initSchema(db: DatabaseSync): void {
  *   - 每次 ALTER 都 try/catch 单列失败不阻塞整体
  */
 function migrate(db: DatabaseSync): void {
-  const current = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+  const current = (
+    db.prepare("PRAGMA user_version").get() as { user_version: number }
+  ).user_version;
   if (current >= SCHEMA_VERSION) return;
 
   // v1 → v2: PR-7..11 新增列 + 索引
   if (current < 2) {
     const cols = new Set(
-      (db.prepare("PRAGMA table_info(atelier_runs)").all() as Array<{ name: string }>).map((c) => c.name),
+      (
+        db.prepare("PRAGMA table_info(atelier_runs)").all() as Array<{
+          name: string;
+        }>
+      ).map((c) => c.name),
     );
     const addCol = (name: string, decl: string) => {
       if (cols.has(name)) return;
       try {
         db.exec(`ALTER TABLE atelier_runs ADD COLUMN ${name} ${decl}`);
       } catch (e) {
-        console.error(`[atelier:registry] migration v1→v2 ADD COLUMN ${name} 失败:`, e);
+        console.error(
+          `[atelier:registry] migration v1→v2 ADD COLUMN ${name} 失败:`,
+          e,
+        );
       }
     };
     addCol("return_status", "TEXT");
@@ -318,7 +323,9 @@ function migrate(db: DatabaseSync): void {
 
   // 更新 user_version(原子)
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-  console.log(`[atelier:registry] schema 已升级 v${current} → v${SCHEMA_VERSION}`);
+  console.log(
+    `[atelier:registry] schema 已升级 v${current} → v${SCHEMA_VERSION}`,
+  );
 }
 
 // ─── Rebuild from status.json ────────────────────────────────────────────────
