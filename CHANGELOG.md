@@ -62,22 +62,22 @@ atelier 所有值得注意的变更都会记录在此文件。
 
 ### 关联提交
 
-| 范围 | Commit | 说明 |
-| ---- | ------ | ---- |
-| `core/config.ts` | `caf6b1d` | FEATURE: 支持 atelier.json 独立配置文件 |
-| `core/schedule.ts` | `556d90a` | FEATURE: 时间窗口 DSL 解析器 |
-| `runtime/runner.ts` | `df607d6` | FEATURE: resolveModelChain 按时段过滤模型 |
-| `context/agents/griller.md` | `e0b1445` | FEATURE: grilling 方法论 agent 定义 |
-| `index.ts` | `e5af262` | REFACTOR: plan review gate 改为注入 grill 方法论 |
-| `scripts/` | `6382ef2` | FEATURE: 内化 wrapper + extract 脚本 |
-| `runtime/launcher.ts` | `d1ab274` | REFACTOR: wrapper 路径改从 plugin root 解析 |
-| `scripts/subagent-wrapper.sh` | `edd62b2` | CLEANUP: 移除 legacy subagents.json + 硬编码路径 |
-| `runtime/multiplexer/types.ts` | `9972ce8` | REFACTOR: 抽 MultiplexerBackend 接口 |
-| `runtime/multiplexer/tmux.ts` | `a402b70` | REFACTOR: 迁出 TmuxBackend |
-| `runtime/multiplexer/herdr.ts` | `6375075` | FEATURE: HerdrBackend |
-| `runtime/launcher.ts` | `ad79b4a` | REFACTOR: 改调 backend 接口 |
-| `scripts/subagent-wrapper.sh` | `48fd640` | FIX: KEEP_PANE 块 multiplexer 感知 |
-| `index.ts` | `8437de9` | REMOVE: 移除弃用的 /run-plan + /loop loopctl 命令 |
+| 范围                           | Commit    | 说明                                              |
+| ------------------------------ | --------- | ------------------------------------------------- |
+| `core/config.ts`               | `caf6b1d` | FEATURE: 支持 atelier.json 独立配置文件           |
+| `core/schedule.ts`             | `556d90a` | FEATURE: 时间窗口 DSL 解析器                      |
+| `runtime/runner.ts`            | `df607d6` | FEATURE: resolveModelChain 按时段过滤模型         |
+| `context/agents/griller.md`    | `e0b1445` | FEATURE: grilling 方法论 agent 定义               |
+| `index.ts`                     | `e5af262` | REFACTOR: plan review gate 改为注入 grill 方法论  |
+| `scripts/`                     | `6382ef2` | FEATURE: 内化 wrapper + extract 脚本              |
+| `runtime/launcher.ts`          | `d1ab274` | REFACTOR: wrapper 路径改从 plugin root 解析       |
+| `scripts/subagent-wrapper.sh`  | `edd62b2` | CLEANUP: 移除 legacy subagents.json + 硬编码路径  |
+| `runtime/multiplexer/types.ts` | `9972ce8` | REFACTOR: 抽 MultiplexerBackend 接口              |
+| `runtime/multiplexer/tmux.ts`  | `a402b70` | REFACTOR: 迁出 TmuxBackend                        |
+| `runtime/multiplexer/herdr.ts` | `6375075` | FEATURE: HerdrBackend                             |
+| `runtime/launcher.ts`          | `ad79b4a` | REFACTOR: 改调 backend 接口                       |
+| `scripts/subagent-wrapper.sh`  | `48fd640` | FIX: KEEP_PANE 块 multiplexer 感知                |
+| `index.ts`                     | `8437de9` | REMOVE: 移除弃用的 /run-plan + /loop loopctl 命令 |
 
 ---
 
@@ -86,11 +86,13 @@ atelier 所有值得注意的变更都会记录在此文件。
 ### 1. 配置迁移（settings.json → atelier.json）
 
 旧配置（`settings.json` 内）：
+
 ```json
 { "atelier": { "defaultTier": "pro", "tiers": {...} } }
 ```
 
 新配置（`~/.config/pi/atelier.json`，推荐）：
+
 ```json
 {
   "defaultTier": "pro",
@@ -105,6 +107,7 @@ atelier 所有值得注意的变更都会记录在此文件。
 ### 2. 多路复用器后端
 
 新增 `runtime/multiplexer/`：
+
 - `types.ts` — `MultiplexerBackend` 接口（currentPaneId/splitAbove/splitRight/setTitle/refocus/isAlive/kill）
 - `detect.ts` — 按 `HERDR_ENV=1`/`$TMUX` 选择后端
 - `tmux.ts` — tmux 实现（从 launcher.ts 迁出，行为字节级一致）
@@ -115,9 +118,9 @@ status.json 文件轮询，multiplexer 无关，零改动。
 
 ### 3. 脚本内化路径变化
 
-| 旧路径（已废弃） | 新路径 |
-| ---- | ---- |
-| `$XDG_DATA_HOME/pi/scripts/subagent-wrapper.sh` | `<plugin>/scripts/subagent-wrapper.sh` |
+| 旧路径（已废弃）                                 | 新路径                                  |
+| ------------------------------------------------ | --------------------------------------- |
+| `$XDG_DATA_HOME/pi/scripts/subagent-wrapper.sh`  | `<plugin>/scripts/subagent-wrapper.sh`  |
 | `$XDG_DATA_HOME/pi/scripts/extract-pi-result.py` | `<plugin>/scripts/extract-pi-result.py` |
 
 `launcher.ts` 的 `getScriptsDir()` 改用 `getPluginRoot()/scripts`。
@@ -125,14 +128,14 @@ wrapper 内的 `PLUGIN_AGENTS_DIR` 从硬编码 XDG 改为 `SCRIPT_DIR/../contex
 
 ### 4. 兼容性矩阵
 
-| 项 | 0.1.1 | 0.2.0 |
-| ---- | ---- | ---- |
-| 多路复用器 | tmux only | tmux + herdr |
-| 配置文件 | settings.json#atelier | atelier.json（+ 旧路径兼容） |
-| 模型时段限制 | 无 | modelSchedules（allow/deny DSL） |
-| plan review gate | 委派 oracle subagent | 主会话多轮 grill |
-| 脚本位置 | 外部 stow 部署 | 插件内置 scripts/ |
-| schema 版本 | v2 | v2（无变化） |
+| 项               | 0.1.1                 | 0.2.0                            |
+| ---------------- | --------------------- | -------------------------------- |
+| 多路复用器       | tmux only             | tmux + herdr                     |
+| 配置文件         | settings.json#atelier | atelier.json（+ 旧路径兼容）     |
+| 模型时段限制     | 无                    | modelSchedules（allow/deny DSL） |
+| plan review gate | 委派 oracle subagent  | 主会话多轮 grill                 |
+| 脚本位置         | 外部 stow 部署        | 插件内置 scripts/                |
+| schema 版本      | v2                    | v2（无变化）                     |
 
 ---
 

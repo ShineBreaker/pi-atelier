@@ -67,26 +67,26 @@ atelier/
 
 依赖方向无环：`core` ← `runtime` / `registry` / `lifecycle` ← `index`。
 
-| 目录         | 职责                                   | 关键文件                                                                                                                                                           |
-| ------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `core/`      | 配置/类型/发现（无外部循环依赖）       | `types.ts`（接口 + DEFAULT_CONFIG）、`config.ts`（atelier.json 解析）、`discovery.ts`、`schemas.ts`、`context.ts`（subagent-only 切片 + agent 路径解析）、`schedule.ts`（模型时段 DSL）、`system-agents.ts` |
-| `context/`   | 插件内置 agent / prompt 模板（自包含） | `agents/*.md`（8 个 agent 定义，含 griller）、`prompts/*.md`（7 个链路模板）                                                                                       |
-| `runtime/`   | 执行链路（多路复用器 → 监控 → 编排）   | `launcher.ts`（分屏，调 backend 接口）、`monitor.ts`（轮询 + return-header 解析，multiplexer 无关）、`runner.ts`（runChain/Parallel/Fallback + schedule 过滤）、`workfile.ts`、`session-log.ts`、`formatting.ts` |
-| `runtime/multiplexer/` | 多路复用器后端抽象（tmux/herdr） | `types.ts`（MultiplexerBackend 接口）、`detect.ts`（HERDR_ENV/$TMUX 检测）、`tmux.ts`、`herdr.ts` |
-| `scripts/`   | pane 内执行脚本（自包含，随插件分发）  | `subagent-wrapper.sh`（subagent 执行包装）、`extract-pi-result.py`（JSONL→彩色终端流） |
-| `registry/`  | 状态索引与治理（SQLite + 恢复层）      | `registry.ts`（SQLite 全局索引）、`orphan-recovery.ts`、`stuck-detector.ts`、`return-header.ts`、`completion-gate.ts`                                              |
-| `lifecycle/` | 长程任务生命周期                       | `checkpoint.ts`（跨崩溃 checkpoint）、`workflow.ts`（可视化 workflow）、`resume.ts`（续跳）                                                                        |
+| 目录                   | 职责                                   | 关键文件                                                                                                                                                                                                         |
+| ---------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `core/`                | 配置/类型/发现（无外部循环依赖）       | `types.ts`（接口 + DEFAULT_CONFIG）、`config.ts`（atelier.json 解析）、`discovery.ts`、`schemas.ts`、`context.ts`（subagent-only 切片 + agent 路径解析）、`schedule.ts`（模型时段 DSL）、`system-agents.ts`      |
+| `context/`             | 插件内置 agent / prompt 模板（自包含） | `agents/*.md`（8 个 agent 定义，含 griller）、`prompts/*.md`（7 个链路模板）                                                                                                                                     |
+| `runtime/`             | 执行链路（多路复用器 → 监控 → 编排）   | `launcher.ts`（分屏，调 backend 接口）、`monitor.ts`（轮询 + return-header 解析，multiplexer 无关）、`runner.ts`（runChain/Parallel/Fallback + schedule 过滤）、`workfile.ts`、`session-log.ts`、`formatting.ts` |
+| `runtime/multiplexer/` | 多路复用器后端抽象（tmux/herdr）       | `types.ts`（MultiplexerBackend 接口）、`detect.ts`（HERDR_ENV/$TMUX 检测）、`tmux.ts`、`herdr.ts`                                                                                                                |
+| `scripts/`             | pane 内执行脚本（自包含，随插件分发）  | `subagent-wrapper.sh`（subagent 执行包装）、`extract-pi-result.py`（JSONL→彩色终端流）                                                                                                                           |
+| `registry/`            | 状态索引与治理（SQLite + 恢复层）      | `registry.ts`（SQLite 全局索引）、`orphan-recovery.ts`、`stuck-detector.ts`、`return-header.ts`、`completion-gate.ts`                                                                                            |
+| `lifecycle/`           | 长程任务生命周期                       | `checkpoint.ts`（跨崩溃 checkpoint）、`workflow.ts`（可视化 workflow）、`resume.ts`（续跳）                                                                                                                      |
 
 ## Agent / Prompt 路径解析
 
 agent/prompt `.md` 源文件位于插件内置 `context/{agents,prompts}/`（atelier 作为独立 pi-package 自包含）。所有读取点走 `core/context.ts` 的统一解析器：
 
-| 读取点                              | 用途                                  | 解析方式                                        |
-| ----------------------------------- | ------------------------------------- | ----------------------------------------------- |
-| `core/discovery.ts`                 | `discoverAgents/discoverPrompts`      | `getAgentDirs()/getPromptDirs()` 多目录扫描     |
-| `runtime/launcher.ts`               | `prepareAgentPrompt`（subagent 启动） | `resolveAgentFile(name)` 按优先级查找           |
-| `index.ts` `loadMainSessionAgentContext` | 主会话 worker/planner/reviewer/griller 注入 | `resolveAgentFile(name)`                   |
-| `scripts/subagent-wrapper.sh`       | `parse_agent_md`（pane 内 bash）      | `SCRIPT_DIR/../context/agents` 相对解析         |
+| 读取点                                   | 用途                                        | 解析方式                                    |
+| ---------------------------------------- | ------------------------------------------- | ------------------------------------------- |
+| `core/discovery.ts`                      | `discoverAgents/discoverPrompts`            | `getAgentDirs()/getPromptDirs()` 多目录扫描 |
+| `runtime/launcher.ts`                    | `prepareAgentPrompt`（subagent 启动）       | `resolveAgentFile(name)` 按优先级查找       |
+| `index.ts` `loadMainSessionAgentContext` | 主会话 worker/planner/reviewer/griller 注入 | `resolveAgentFile(name)`                    |
+| `scripts/subagent-wrapper.sh`            | `parse_agent_md`（pane 内 bash）            | `SCRIPT_DIR/../context/agents` 相对解析     |
 
 **优先级**（同名 agent/prompt 按此顺序去重，先找到的赢）：
 
@@ -140,11 +140,11 @@ atelier 配置从 `~/.config/pi/atelier.json`（独立文件，推荐）或 `set
 
 关键字段（`core/types.ts` SubagentConfig）：
 
-| 字段 | 说明 |
-| ---- | ---- |
-| `tiers` | tier 名 → {model, fallback[]} 映射（agent frontmatter `tier:` 引用） |
+| 字段             | 说明                                                                                                                                                                             |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tiers`          | tier 名 → {model, fallback[]} 映射（agent frontmatter `tier:` 引用）                                                                                                             |
 | `modelSchedules` | 模型名 → {allow?:[], deny?:[]} 时段限制（按模型名索引，跨 tier 生效）。`core/schedule.ts` 的 DSL：`{deny:["Mon-Fri 14:00-18:00"]}` / `{allow:["22:00-08:00"]}`（跨午夜自动展开） |
-| `defaultTier` | agent frontmatter 无 tier 时的回退 tier |
+| `defaultTier`    | agent frontmatter 无 tier 时的回退 tier                                                                                                                                          |
 
 ## Registry / 持久化层
 

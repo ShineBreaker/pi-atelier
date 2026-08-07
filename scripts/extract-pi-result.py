@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: MIT
 
 """Extract assistant text and semantic status from Pi JSON stream events."""
+
 import argparse
 import json
 import os
@@ -80,7 +81,11 @@ def text_from_message(msg):
 
     texts = []
     for part in parts:
-        if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+        if (
+            isinstance(part, dict)
+            and part.get("type") == "text"
+            and isinstance(part.get("text"), str)
+        ):
             texts.append(part["text"])
     return "\n".join(texts)
 
@@ -121,7 +126,11 @@ def result_text(result):
         return ""
     texts = []
     for part in content:
-        if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+        if (
+            isinstance(part, dict)
+            and part.get("type") == "text"
+            and isinstance(part.get("text"), str)
+        ):
             texts.append(part["text"])
     return "\n".join(texts)
 
@@ -178,6 +187,7 @@ def emit_assistant(text, *, final=False):
         ensure_assistant_break()
         rule("done")
 
+
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -215,10 +225,16 @@ for line in sys.stdin:
         continue
 
     if event_type == "tool_execution_update":
-        tool_name = obj.get("toolName") or running_tools.get(obj.get("toolCallId"), "tool")
-        partial = short(result_text(obj.get("partialResult")) or obj.get("partialResult"), 160)
+        tool_name = obj.get("toolName") or running_tools.get(
+            obj.get("toolCallId"), "tool"
+        )
+        partial = short(
+            result_text(obj.get("partialResult")) or obj.get("partialResult"), 160
+        )
         if partial:
-            message = paint(tool_name, Style.bold) + paint("  update: ", Style.dim) + partial
+            message = (
+                paint(tool_name, Style.bold) + paint("  update: ", Style.dim) + partial
+            )
             log_line("tool.", message, color=Style.magenta)
         continue
 
