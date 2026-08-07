@@ -14,6 +14,7 @@
 atelier/
 ├── context/
 │   ├── agents/
+│   │   ├── griller.md
 │   │   ├── oracle.md
 │   │   ├── planner.md
 │   │   ├── researcher.md
@@ -33,6 +34,7 @@ atelier/
 │   ├── config.ts
 │   ├── context.ts
 │   ├── discovery.ts
+│   ├── schedule.ts
 │   ├── schemas.ts
 │   ├── system-agents.ts
 │   └── types.ts
@@ -47,12 +49,20 @@ atelier/
 │   ├── return-header.ts
 │   └── stuck-detector.ts
 ├── runtime/
+│   ├── multiplexer/
+│   │   ├── detect.ts
+│   │   ├── herdr.ts
+│   │   ├── tmux.ts
+│   │   └── types.ts
 │   ├── formatting.ts
 │   ├── launcher.ts
 │   ├── monitor.ts
 │   ├── runner.ts
 │   ├── session-log.ts
 │   └── workfile.ts
+├── scripts/
+│   ├── extract-pi-result.py
+│   └── subagent-wrapper.sh
 ├── .gitignore
 ├── CHANGELOG.md
 ├── LICENSE
