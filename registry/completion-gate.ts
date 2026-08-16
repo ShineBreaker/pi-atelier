@@ -109,16 +109,3 @@ export function decide(
   // 接口已备好,等待 task tool 真实落地时填充
   return { needReentry: false };
 }
-
-/** debug helper:报告当前 gate 状态(供 status / debug 使用) */
-export function gateStatus(): {
-  taskToolAvailable: boolean;
-  maxReentry: number;
-  readOnlyAgents: string[];
-} {
-  return {
-    taskToolAvailable: isTaskToolAvailable(),
-    maxReentry: MAX_REENTRY,
-    readOnlyAgents: Array.from(READ_ONLY_AGENTS),
-  };
-}

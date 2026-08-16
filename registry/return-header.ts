@@ -181,12 +181,3 @@ export function formatReturnHeaderInstruction(): string {
 - \`**Findings worth promoting\`\` 应是经过验证的事实,不是泛泛想法
 - 字段名大小写不重要(Status/status/STATUS 都能解析),但冒号必须是英文半角 \`:\``;
 }
-
-/** 工具函数:Status 字符串是否在 4 个合法值之内 */
-export function isKnownStatus(
-  s: string,
-): s is Exclude<ReturnStatus, "unknown"> {
-  return (
-    s === "success" || s === "partial" || s === "failed" || s === "blocked"
-  );
-}

@@ -22,7 +22,6 @@
  *   - 已 complete: 返回 { finished: true, ... }
  */
 
-import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   type CheckpointData,
@@ -110,40 +109,4 @@ export function resumeChain(
       `${parentRunId}.json`,
     ),
   };
-}
-
-/**
- * 内部校验工具(给 e2e 测试 / 调试用)。
- * 校验并抛错,不读取也不返回 plan。
- */
-export function validateResumeInput(
-  parentRunId: string,
-  cwd: string = process.cwd(),
-): { ok: true; checkpoint: CheckpointData } | { ok: false; error: string } {
-  try {
-    const cp = readCheckpoint(cwd, parentRunId);
-    if (!cp) return { ok: false, error: "checkpoint not found" };
-    validateCheckpoint(cp, { resumeFrom: cp.currentStep });
-    return { ok: true, checkpoint: cp };
-  } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
-}
-
-/** 检查 .agents/workflows/ 目录是否存在(避免 e2e 测试写到错的根目录) */
-export function workflowsDir(cwd: string): string {
-  return path.join(cwd, ".agents", "workflows");
-}
-
-/** debug helper:列出某目录所有 checkpoint id */
-export function listCheckpoints(cwd: string = process.cwd()): string[] {
-  const dir = workflowsDir(cwd);
-  if (!fs.existsSync(dir)) return [];
-  return fs
-    .readdirSync(dir)
-    .filter((f) => f.endsWith(".json"))
-    .map((f) => f.replace(/\.json$/, ""));
 }

@@ -558,21 +558,6 @@ export function incrementReentryCount(runId: string): number {
   }
 }
 
-/**
- * 触摸 last_turn_at 为 now。本阶段基本不调用（没有 turn 事件），
- * 留给后续 PR 引入 turn 计数时用。
- */
-export function touchRun(runId: string): void {
-  try {
-    const db = getRegistry();
-    db.prepare("UPDATE atelier_runs SET last_turn_at = ? WHERE run_id = ?").run(
-      Date.now(),
-      runId,
-    );
-  } catch {
-    /* ignore — 本阶段 best-effort */
-  }
-}
 // ─── 查询 API ────────────────────────────────────────────────────────────────
 
 /** 把 row 转换为 RegisteredRun（snake_case → camelCase）。 */
@@ -617,47 +602,6 @@ export function listActive(): RegisteredRun[] {
     return (stmt.all() as RegisteredRow[]).map(rowToRun);
   } catch {
     return [];
-  }
-}
-
-/** 按 status 过滤。 */
-export function listByStatus(status: RunStatus): RegisteredRun[] {
-  try {
-    const db = getRegistry();
-    const stmt = db.prepare(
-      "SELECT * FROM atelier_runs WHERE status = ? ORDER BY started_at DESC",
-    );
-    return (stmt.all(status) as RegisteredRow[]).map(rowToRun);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * 列出最近 N 条 run（默认 50）。给未来的 `atelier list` UI 用。
- * 注意：本阶段不实现 list 命令（orchestration 留给后续 PR）。
- */
-export function listRecent(limit = 50): RegisteredRun[] {
-  try {
-    const db = getRegistry();
-    const stmt = db.prepare(
-      "SELECT * FROM atelier_runs ORDER BY started_at DESC LIMIT ?",
-    );
-    return (stmt.all(limit) as RegisteredRow[]).map(rowToRun);
-  } catch {
-    return [];
-  }
-}
-
-/** 按 run_id 查单条。 */
-export function getRun(runId: string): RegisteredRun | null {
-  try {
-    const db = getRegistry();
-    const stmt = db.prepare("SELECT * FROM atelier_runs WHERE run_id = ?");
-    const row = stmt.get(runId) as RegisteredRow | undefined;
-    return row ? rowToRun(row) : null;
-  } catch {
-    return null;
   }
 }
 

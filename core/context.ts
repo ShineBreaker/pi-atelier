@@ -89,61 +89,6 @@ export function resolveAgentFile(agentName: string): string | null {
 }
 
 /**
- * 检查文件中是否有 subagent-only 标记。
- */
-export function hasSubagentOnlySection(content: string): boolean {
-  return SUBAGENT_START.test(content) && SUBAGENT_END.test(content);
-}
-
-/**
- * 提取 subagent-only 段（标记之间的内容，不含标记本身）。
- *
- * 如果只有一个标记或没有匹配的结束/开始标记，按以下规则处理：
- * - 没有开始标记：返回空字符串
- * - 没有结束标记：返回开始标记到文件末尾的内容
- *
- * 多个 subagent-only 段会被拼接（每段之间用一个换行分隔）。
- */
-export function extractSubagentOnlySection(content: string): string {
-  const parts: string[] = [];
-  const lines = content.split("\n");
-  let i = 0;
-  let inSubagent = false;
-  let buffer: string[] = [];
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    if (!inSubagent && SUBAGENT_START.test(line)) {
-      inSubagent = true;
-      buffer = [];
-      i++;
-      continue;
-    }
-
-    if (inSubagent && SUBAGENT_END.test(line)) {
-      inSubagent = false;
-      parts.push(buffer.join("\n").trim());
-      buffer = [];
-      i++;
-      continue;
-    }
-
-    if (inSubagent) {
-      buffer.push(line);
-    }
-    i++;
-  }
-
-  // 未闭合的开始标记：把剩余内容也加进去
-  if (inSubagent && buffer.length > 0) {
-    parts.push(buffer.join("\n").trim());
-  }
-
-  return parts.filter((p) => p.length > 0).join("\n\n");
-}
-
-/**
  * 从完整内容中剥离 subagent-only 段，得到 main-session 视图。
  *
  * 保留所有非 subagent-only 段的内容（包括标记外的所有行）。

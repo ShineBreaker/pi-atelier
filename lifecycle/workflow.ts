@@ -17,7 +17,6 @@
  * 设计要点:
  *   - `WorkflowStep`: 单步定义 + 状态
  *   - `Workflow`: 完整工作流定义
- *   - `nextReadyStep(workflow)`: 返回下一个可执行 step(线性 chain 形态)
  *   - `serialize` / `deserialize`: JSON 双向转换
  *   - `persistWorkflow` / `loadWorkflow`: 落盘到 `.agents/workflows/{id}.json`
  */
@@ -94,31 +93,6 @@ export function deserialize(json: string): Workflow {
 }
 
 /**
- * 找到下一个 ready step。
- *
- * 简化决策: 只支持线性 chain(`mode === "chain"`)且 dependsOn 形成一条线的情况。
- * 返回第一个 status === "pending" 且所有依赖已 completed 的 step;
- * 若没有或全 completed → 返回 null。
- *
- * 不做真正的 topological sort(用户决策,等需要 DAG 时再扩展)。
- */
-export function nextReadyStep(workflow: Workflow): WorkflowStep | null {
-  // 简化版本只处理线性场景: 返回第一个 pending 且 (dependsOn.length === 0 ||
-  // 所有 dependsOn 已 completed)的 step
-  for (const step of workflow.steps) {
-    if (step.status !== "pending") continue;
-    if (step.dependsOn.length === 0) return step;
-    // 检查依赖是否全部 completed
-    const allCompleted = step.dependsOn.every((depId) => {
-      const dep = workflow.steps.find((s) => s.id === depId);
-      return dep?.status === "completed";
-    });
-    if (allCompleted) return step;
-  }
-  return null;
-}
-
-/**
  * 把 Workflow 持久化到 `.agents/workflows/{id}.json`(原子写)。
  *
  * @returns 写入的文件路径
@@ -172,16 +146,4 @@ export function listWorkflows(
         return { id, name: "(corrupt)", mode: "chain" };
       }
     });
-}
-
-/** 把 WorkflowStep 转成 task 描述(task 模板替换 {var}) */
-export function resolveStepTask(
-  step: WorkflowStep,
-  context: Record<string, string>,
-): string {
-  let task = step.task;
-  for (const [key, value] of Object.entries(context)) {
-    task = task.split(`{${key}}`).join(value);
-  }
-  return task;
 }
