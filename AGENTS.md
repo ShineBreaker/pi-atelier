@@ -250,11 +250,11 @@ Refs: #issue (如有)
 
 1. **整理 commit 历史**：`git log v0.X.Y..HEAD` 确认本次发版包含的 commit
 2. **更新 CHANGELOG.md**：在文件顶部新增 `## [X.Y.Z] - YYYY-MM-DD` 段，列出所有变更
-3. **bump package.json 版本号**：`UPDATE: (package.json) bump.` 单独 commit
+3. **bump package.json 版本号**：`build(package.json): bump version` 单独 commit
 4. **创建 git tag**：`git tag -s v0.X.Z -m "atelier v0.X.Z"` （GPG 签名 tag）
 5. **推送**：先 `git push origin main`，再 `git push origin v0.X.Z`
 6. **GitHub Release**（可选）：在 GitHub UI 基于 tag 创建 release notes，可直接复制 CHANGELOG 段
-7. **父仓库 bump submodule 指针**（在 Guix-configs 父仓库）：单独 commit `UPDATE: (atelier) bump submodule → 0.X.Z`
+7. **父仓库 bump submodule 指针**（在 Guix-configs 父仓库）：单独 commit `build(atelier): bump submodule to 0.X.Z`
 
 ### 发版时 checklist
 
