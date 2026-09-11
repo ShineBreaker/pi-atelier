@@ -5,6 +5,54 @@ atelier 所有值得注意的变更都会记录在此文件。
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-09-12
+
+### Added
+
+- **图形化配置面板**：新增 `/atelier-config` 命令，打开 TUI 设置面板（SettingsList）
+  编辑全部 atelier.json 字段 —— 6 个标量（pollIntervalMs / panePrefix / keepResults /
+  timeoutMs / maxTasks / maxConcurrency）、defaultTier，以及 `tiers`、`modelSchedules`
+  两个子菜单（增删改 tier 的 model/fallback、模型的 allow/deny 时段）。改动先落草稿，
+  选「💾 保存并应用」才写回配置文件（按现有加载顺序决定是 atelier.json 还是
+  settings.json 的 `atelier` 段，未知字段原样保留），保存即热重载，无需重启 pi；
+  Esc 放弃全部修改。
+
+### Fixed
+
+- **herdr 下 subagent pane 不自动关闭**：herdr pane 是常驻 shell（split 建空 pane
+  + run 往里发命令），subagent 命令跑完后 shell 仍在、pane 残留。现 run 命令尾
+  拼 `; herdr pane close <id>` 自闭合，对齐 tmux「进程退出即关」语义；
+  `PI_SUBAGENT_KEEP_PANE=1` 时 exec 出的交互 shell 被用户退出后才关闭，保留语义不变。
+
+### 关联提交
+
+| 范围                                                         | Commit    | 说明                                |
+| ------------------------------------------------------------ | --------- | ----------------------------------- |
+| `runtime/multiplexer/herdr.ts`                               | `bbfe42f` | FIX: run 命令尾缀自闭合             |
+| `core/config.ts` `ui/` `index.ts` `package.json`             | `90b4ad4` | FEATURE: /atelier-config TUI 配置面板 |
+| `AGENTS.md`                                                  | `5c844e7` | DOCS: 0.3.0 架构说明                |
+
+---
+
+## 技术细节 / Migration Notes
+
+### 1. 配置面板的写回目标
+
+保存时 `core/config.ts` 的 `resolveConfigTarget()` 按与加载相同的优先级决定写回
+位置：`~/.config/pi/atelier.json`（standalone，整文件即配置）> 首个解析出 `atelier`
+字段的 settings.json（nested，只改 `atelier` 子键）。写回走「读旧 → 浅合并 → 整写」，
+配置文件里 atelier 不认识的字段不会被抹掉。
+
+保存成功后 `index.ts` 的 `config` 变量被重 `loadConfig()` 的结果替换，同一会话
+后续 subagent 启动立即生效，无需重启 pi。
+
+### 2. herdr pane 自闭合
+
+`HerdrBackend` 的 `splitRun`（splitAbove/splitRight 共用）把 run 命令拼成
+`<cmd>; <herdr-bin> pane close <paneId>`。herdr 路径取宿主进程 env 的
+`HERDR_BIN_PATH`，缺失退回 PATH 查找——不在命令串里做 shell 参数展开，
+因为 pane 内是用户交互 shell（fish 不认 `${VAR:-default}`）。
+
 ## [0.2.0] - 2026-08-04
 
 ### Added
