@@ -19,12 +19,14 @@
  *   - /<prompt-name> <param> — 按 prompt 模板启动链路
  *   - /atelier-resume <id>  — 从 checkpoint 续跳未完成的 chain
  *   - /atelier-workflow ...  — 查看持久化的 workflow
+ *   - /atelier-config       — 图形化编辑 atelier 配置（TUI 设置面板）
  *
  * 目录结构（按职能分层，详见同目录 AGENTS.md）：
  *   core/       — types, config, schemas, context, discovery, system-agents
  *   runtime/    — launcher, monitor, runner, workfile, session-log, formatting
  *   registry/   — registry(SQLite), orphan-recovery, stuck-detector, return-header, completion-gate
  *   lifecycle/  — checkpoint, workflow, resume
+ *   ui/         — config-panel（/atelier-config 的 TUI 面板）
  */
 
 import * as fs from "node:fs";
@@ -56,6 +58,7 @@ import { orphanRecovery } from "./registry/orphan-recovery.ts";
 import { startStuckDetector } from "./registry/stuck-detector.ts";
 import { resumeChain, type ResumePlan, type FinishedResume } from "./lifecycle/resume.ts";
 import { loadWorkflow, listWorkflows } from "./lifecycle/workflow.ts";
+import { openConfigPanel } from "./ui/config-panel.ts";
 
 // ─── Plan Review Gate 提示词 ─────────────────────────────────────────────────
 //
@@ -196,7 +199,9 @@ function loadMainSessionAgentContext(agentName: string): string | null {
 // ─── Extension Entry ─────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-  const config = loadConfig();
+  // let 而非 const：/atelier-config 保存后重赋值，所有闭包读的都是这个变量，
+  // 无需重启 pi 即可热生效
+  let config = loadConfig();
 
   // ── Atelier Registry：启动 rebuild + orphan recovery + stuck detector ─────
   //
@@ -896,6 +901,25 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       ctx.ui.notify("❌ 用法: /atelier-workflow list | show <id>", "error");
+    },
+  });
+
+  // ── /atelier-config ─────────────────────────────────────────────────────────
+  // 图形化编辑 atelier 配置：面板内改的是草稿，保存才写盘（atelier.json 或
+  // settings.json 的 atelier 段，由 resolveConfigTarget 决定），并把新配置热
+  // 替换进 config 变量 —— 同一会话内后续 subagent 启动立即用新值。
+  pi.registerCommand("atelier-config", {
+    description: "图形化编辑 atelier 配置（atelier.json）",
+    handler: async (_args, ctx) => {
+      if (ctx.mode !== "tui") {
+        ctx.ui.notify("/atelier-config 需要 TUI 模式", "error");
+        return;
+      }
+      const next = await openConfigPanel(ctx, config);
+      if (next) {
+        config = next;
+        ctx.ui.notify("✅ 配置已保存并热重载", "info");
+      }
     },
   });
 
