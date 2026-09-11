@@ -63,6 +63,8 @@ atelier/
 ├── scripts/
 │   ├── extract-pi-result.py
 │   └── subagent-wrapper.sh
+├── ui/
+│   └── config-panel.ts
 ├── .gitignore
 ├── CHANGELOG.md
 ├── LICENSE
@@ -75,7 +77,7 @@ atelier/
 
 ## 按职能分层
 
-依赖方向无环：`core` ← `runtime` / `registry` / `lifecycle` ← `index`。
+依赖方向无环：`core` ← `runtime` / `registry` / `lifecycle` / `ui` ← `index`。
 
 | 目录                   | 职责                                   | 关键文件                                                                                                                                                                                                         |
 | ---------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -86,6 +88,7 @@ atelier/
 | `scripts/`             | pane 内执行脚本（自包含，随插件分发）  | `subagent-wrapper.sh`（subagent 执行包装）、`extract-pi-result.py`（JSONL→彩色终端流）                                                                                                                           |
 | `registry/`            | 状态索引与治理（SQLite + 恢复层）      | `registry.ts`（SQLite 全局索引）、`orphan-recovery.ts`、`stuck-detector.ts`、`return-header.ts`、`completion-gate.ts`                                                                                            |
 | `lifecycle/`           | 长程任务生命周期                       | `checkpoint.ts`（跨崩溃 checkpoint）、`workflow.ts`（可视化 workflow）、`resume.ts`（续跳）                                                                                                                      |
+| `ui/`                  | TUI 交互面板（仅 `ctx.mode === "tui"`） | `config-panel.ts`（`/atelier-config` 的 SettingsList 面板，草稿编辑 + saveConfig 写回）                                                                                                                                            |
 
 ## Agent / Prompt 路径解析
 
@@ -156,6 +159,8 @@ atelier 配置从 `~/.config/pi/atelier.json`（独立文件，推荐）或 `set
 | `modelSchedules` | 模型名 → {allow?:[], deny?:[]} 时段限制（按模型名索引，跨 tier 生效）。`core/schedule.ts` 的 DSL：`{deny:["Mon-Fri 14:00-18:00"]}` / `{allow:["22:00-08:00"]}`（跨午夜自动展开） |
 | `defaultTier`    | agent frontmatter 无 tier 时的回退 tier                                                                                                                                          |
 
+`/atelier-config` 打开 TUI 设置面板（SettingsList）编辑全部字段，保存时按 `resolveConfigTarget()` 写回 atelier.json（或 settings.json 的 `atelier` 段），并重赋值 `index.ts` 的 `config` 变量热重载（无需重启 pi）。
+
 ## Registry / 持久化层
 
 - **status.json 是 single source of truth**；SQLite registry（`$XDG_DATA_HOME/pi/atelier-registry.db`）是查询视图，崩溃可丢（删 .db 下次启动 `rebuildFromStatusFiles` 自动重建）。
@@ -176,7 +181,7 @@ atelier 配置从 `~/.config/pi/atelier.json`（独立文件，推荐）或 `set
 ## 修改约束
 
 - **内置脚本** `subagent-wrapper.sh` / `extract-pi-result.py` 在 `scripts/`（随插件自包含分发）。它们在 spawned pane 内作为独立进程运行（tmux/herdr `split`+`run` 调用），只写 status.json/result.md，不知 SQLite 存在——atelier 是唯一的 SQLite writer。
-- **多路复用器后端**：`runtime/multiplexer/` 抽象了 tmux/herdr 差异。`launcher.ts` 调 `MultiplexerBackend` 接口，`detectBackend()` 按 `HERDR_ENV=1`/`$TMUX` 自动选择。新增多路复用器支持只需实现接口 + 在 `detect.ts` 加检测分支。
+- **多路复用器后端**：`runtime/multiplexer/` 抽象了 tmux/herdr 差异。`launcher.ts` 调 `MultiplexerBackend` 接口，`detectBackend()` 按 `HERDR_ENV=1`/`$TMUX` 自动选择。新增多路复用器支持只需实现接口 + 在 `detect.ts` 加检测分支。注意 herdr pane 是常驻 shell（run 的命令退出后 pane 不消失），`herdr.ts` 的 `splitRun` 在 run 命令尾拼 `herdr pane close <id>` 自闭合，对齐 tmux「进程退出即关」语义。
 - **模型时段限制**：`core/schedule.ts` 提供 allow/deny DSL，`runner.ts` 的 `resolveModelChain` 按 `config.modelSchedules[modelName]` 过滤。时段配置在 `atelier.json` 的 `modelSchedules` 字段（按模型名索引，跨 tier 生效）。
 - **completion-gate.ts** 的 `isTaskToolAvailable()` 当前恒 false（pi 无 task 工具），`decide()` 是 no-op。架构保留待 pi 接入 task 工具后激活，不要误删。
 - **CAPABILITY_SELF_CHECK**（`runtime/launcher.ts`）硬注入所有 subagent prompt——设计决策，所有 subagent 无条件获得能力自检。
