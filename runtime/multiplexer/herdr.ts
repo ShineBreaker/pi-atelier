@@ -13,6 +13,10 @@
  *   - herdr split 创建的新 pane 在主 pane **下方**（--direction down），
  *     tmux 在上方（-b）。纯界面差异，不影响 monitor 的 status.json 轮询。
  *   - herdr pane ID 是不透明字符串（如 w1:p1），tmux 是 %N。
+ *   - herdr pane 是常驻 shell：run 的命令退出后 shell 仍在、pane 不消失
+ *     （tmux split-window 的 pane 进程即命令本身，退出即自动关闭）。
+ *     因此 run 时在命令尾拼 `; herdr pane close <id>` 自闭合，对齐 tmux
+ *     语义；KEEP_PANE exec 出的交互 shell 被用户退出后同样触发。
  *   - herdr 无「焦点切回」概念：split 用 --no-focus，焦点从未离开主 pane，
  *     refocus() 是 no-op。
  *
@@ -57,6 +61,26 @@ function parsePaneId(json: string): string {
   return paneId;
 }
 
+/**
+ * split + run 两步合一：按 splitArgs 分割拿到 paneId，再往 pane 发
+ * `<cmd>; herdr pane close <id>`（自闭合尾缀，见文件头说明）。
+ *
+ * herdr 路径在宿主侧解析（HERDR_BIN_PATH，缺失退回 PATH 的 "herdr"）后
+ * 内嵌进命令串：pane 内跑的是用户交互 shell（可能是 fish，不认
+ * ${VAR:-default} 这类 POSIX 展开），所以不在命令串里做 shell 参数展开。
+ */
+function splitRun(splitArgs: string[], cmd: string): string {
+  const paneId = parsePaneId(herdrExec(splitArgs));
+  const herdrBin = process.env.HERDR_BIN_PATH ?? "herdr";
+  herdrExec([
+    "pane",
+    "run",
+    paneId,
+    `${cmd}; '${herdrBin}' pane close ${paneId}`,
+  ]);
+  return paneId;
+}
+
 export class HerdrBackend implements MultiplexerBackend {
   readonly name = "herdr" as const;
 
@@ -81,43 +105,42 @@ export class HerdrBackend implements MultiplexerBackend {
    * 在当前 pane 下方垂直分割新 pane（herdr 只有 down，无 up），
    * 在其中运行 cmd，返回新 pane ID。
    *
-   * 两步：split（创建空 pane，--no-focus 不抢焦点）+ run（发命令）。
    * ratio 直接传 herdr（float 0-1，与 tmux percentage 不同）。
    */
   splitAbove(cmd: string, ratio: number): string {
-    const splitJson = herdrExec([
-      "pane",
-      "split",
-      "--current",
-      "--direction",
-      "down",
-      "--no-focus",
-      "--ratio",
-      String(ratio),
-    ]);
-    const paneId = parsePaneId(splitJson);
-    herdrExec(["pane", "run", paneId, cmd]);
-    return paneId;
+    return splitRun(
+      [
+        "pane",
+        "split",
+        "--current",
+        "--direction",
+        "down",
+        "--no-focus",
+        "--ratio",
+        String(ratio),
+      ],
+      cmd,
+    );
   }
 
   /**
    * 在指定 pane 右侧水平分割新 pane，运行 cmd，返回新 pane ID。
-   * 用于 parallel/chain 在顶部行内扩展。同样两步 split + run。
+   * 用于 parallel/chain 在顶部行内扩展。
    */
   splitRight(targetPaneId: string, cmd: string, ratio: number): string {
-    const splitJson = herdrExec([
-      "pane",
-      "split",
-      targetPaneId,
-      "--direction",
-      "right",
-      "--no-focus",
-      "--ratio",
-      String(ratio),
-    ]);
-    const paneId = parsePaneId(splitJson);
-    herdrExec(["pane", "run", paneId, cmd]);
-    return paneId;
+    return splitRun(
+      [
+        "pane",
+        "split",
+        targetPaneId,
+        "--direction",
+        "right",
+        "--no-focus",
+        "--ratio",
+        String(ratio),
+      ],
+      cmd,
+    );
   }
 
   /** 设置 pane 标签（herdr pane rename）。失败静默。 */
