@@ -48,6 +48,7 @@ import { parseReturnHeader } from "../registry/return-header.ts";
 function collectPeerResult(
   peer: PeerInfo,
   seq: number,
+  backend: ReturnType<typeof detectBackend> | null,
 ): { output: string; extracted: boolean } {
   const resultPath = path.join(peer.peerDir, `result-${seq}.md`);
   try {
@@ -56,8 +57,7 @@ function collectPeerResult(
     /* 走兜底 */
   }
   // 兜底：transcript 尾部。TUI chrome 混在里面是可接受的降级。
-  const tail =
-    detectBackend().readPane?.(peer.paneId, 200) ?? "(no output)";
+  const tail = backend?.readPane?.(peer.paneId, 200) ?? "(no output)";
   const output =
     tail.trim() ||
     "(peer 未写 result 文件，transcript 尾部为空)";
@@ -204,7 +204,7 @@ export async function waitForPeerMessage(
       }
       if (Date.now() - remediatedAt < REMEDIATE_GRACE_MS) return false;
     }
-    const { output, extracted } = collectPeerResult(peer, seq);
+    const { output, extracted } = collectPeerResult(peer, seq, backend);
     if (extracted) {
       console.warn(`[atelier:monitor] ${msgId} 补写无效，transcript 兜底`);
     }
@@ -238,7 +238,7 @@ export async function waitForPeerMessage(
           st.status !== "running"
         ) {
           clearInterval(interval);
-          const { output, extracted } = collectPeerResult(peer, seq);
+          const { output, extracted } = collectPeerResult(peer, seq, backend);
           if (extracted) {
             console.warn(
               `[atelier:monitor] ${msgId} peer 未写 result-${seq}.md，已用 transcript 兜底`,
