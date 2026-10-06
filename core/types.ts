@@ -165,6 +165,8 @@ export interface PeerInfo {
   createdAt: number;
   /** 是否存活（closePeer 或 pane 死亡时置 false） */
   alive: boolean;
+  /** 派发该 peer 的 pi session id（孤儿认领按 session 归属判定） */
+  sessionId?: string;
   /** herdr agent_session 里报告的原生 session 标识（如有） */
   nativeSessionId?: string;
   /** 最后一次观测到的 agent_status（herdr）或推断状态 */

@@ -24,7 +24,7 @@
  * 目录结构（按职能分层，详见同目录 AGENTS.md）：
  *   core/       — types, config, schemas, context, discovery, system-agents
  *   runtime/    — launcher, monitor, runner, workfile, session-log, formatting
- *   registry/   — registry(SQLite), orphan-recovery, stuck-detector, return-header, completion-gate
+ *   registry/   — registry(SQLite), orphan-recovery, return-header, completion-gate
  *   lifecycle/  — checkpoint, workflow, resume
  *   ui/         — config-panel（/atelier-config 的 TUI 面板）
  */
@@ -80,7 +80,8 @@ import { appendSessionLog, finalizeSessionLog } from "./runtime/session-log.ts";
 import { stripSubagentOnlySection, resolveAgentFile } from "./core/context.ts";
 import { rebuildFromStatusFiles, closeRegistry } from "./registry/registry.ts";
 import { orphanRecovery } from "./registry/orphan-recovery.ts";
-import { startStuckDetector } from "./registry/stuck-detector.ts";
+import { piSession } from "./core/session.ts";
+import { detectBackend } from "./runtime/multiplexer/detect.ts";
 import { resumeChain, type ResumePlan, type FinishedResume } from "./lifecycle/resume.ts";
 import { loadWorkflow, listWorkflows } from "./lifecycle/workflow.ts";
 import { openConfigPanel } from "./ui/config-panel.ts";
@@ -228,16 +229,16 @@ export default function (pi: ExtensionAPI) {
   // 无需重启 pi 即可热生效
   let config = loadConfig();
 
-  // ── Atelier Registry：启动 rebuild + orphan recovery + stuck detector ─────
+  // ── Atelier Registry：启动 rebuild + session 就绪后 orphan recovery ───────
   //
-  // 三步全部 best-effort，任何一步失败不阻塞 atelier 扩展加载。
+  // 全部 best-effort，任何一步失败不阻塞 atelier 扩展加载。
   // status.json 仍是 single source of truth；registry 仅是查询视图。
-  // 设计细节见 registry.ts / orphan-recovery.ts / stuck-detector.ts。
+  // 孤儿认领延迟到 session id 首次提取后（before_agent_start）——按
+  // 「当前 pi session 名下」归属收尾，判定依据是 pane/harness 存活。
   const registryInit = (() => {
     try {
       const rebuildReport = rebuildFromStatusFiles();
-      const recoveryReport = orphanRecovery();
-      return { ok: true as const, rebuildReport, recoveryReport };
+      return { ok: true as const, rebuildReport };
     } catch (err) {
       console.warn(
         "[atelier:registry] init failed, continuing without index:",
@@ -253,8 +254,34 @@ export default function (pi: ExtensionAPI) {
     );
   }
 
-  // 后台 stuck detector fiber（unref，不阻塞进程退出）
-  const stuckDetector = registryInit.ok ? startStuckDetector() : null;
+  // 孤儿认领（一次）：探针来自当前 mux 后端；无 mux 时保守放行
+  let orphanDone = false;
+  const runOrphanRecoveryOnce = () => {
+    if (orphanDone || !registryInit.ok) return;
+    orphanDone = true;
+    try {
+      let probes;
+      try {
+        const backend = detectBackend();
+        probes = {
+          paneAlive: (id: string) => backend.isAlive(id),
+          agentStatus: (id: string) => backend.agentStatus?.(id) ?? null,
+          agentSession: (id: string) => backend.agentSession?.(id) ?? null,
+        };
+      } catch {
+        probes = undefined;
+      }
+      const r = orphanRecovery(Date.now(), probes);
+      if (r.recovered + r.settled > 0) {
+        console.log(
+          `[atelier:registry] orphan recovery: ${r.recovered} 孤儿收尾, ${r.settled} 代写终态` +
+            `（session ${piSession.id?.slice(0, 8)}…）`,
+        );
+      }
+    } catch (err) {
+      console.warn("[atelier:registry] orphan recovery failed:", err);
+    }
+  };
 
   // ── 注册 subagent 工具 ──────────────────────────────────────────────────
 
@@ -1434,6 +1461,25 @@ export default function (pi: ExtensionAPI) {
       // 防止 subagent 递归
       if (process.env.PI_SUBAGENT) return;
 
+      // ── 0. 提取当前 pi session id + 一次性孤儿认领 ──────────────────
+      // session 文件首条 entry 即 {type:"session", id}；resume 场景读到
+      // 的是被恢复会话的原 id——满足「进入了相同的会话再扫该会话的记录」。
+      if (!piSession.id) {
+        try {
+          const head = ctx.sessionManager
+            .getEntries()
+            .find((e) => (e as { type?: string }).type === "session") as
+            | { id?: string }
+            | undefined;
+          if (head?.id) {
+            piSession.id = head.id;
+            runOrphanRecoveryOnce();
+          }
+        } catch {
+          /* 读取失败：下一回合再试 */
+        }
+      }
+
       // ── 1. 优先检查命令注入标记（/<agentname> 在空上下文下触发）──────
       //
       // 命令 handler 用 appendEntry("atelier:context-inject", { agent }) 写标记，
@@ -1542,8 +1588,6 @@ export default function (pi: ExtensionAPI) {
     pi.on("session_shutdown", () => {
       reviewedPlans.clear();
       finalizeSessionLog(process.cwd());
-      // 停止 stuck detector，清除 interval handler
-      stuckDetector?.stop();
       // flush WAL，关闭 SQLite 连接
       closeRegistry();
     });

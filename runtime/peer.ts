@@ -38,6 +38,7 @@ import {
 import { detectBackend } from "./multiplexer/detect.ts";
 import type { MultiplexerBackend } from "./multiplexer/types.ts";
 import type { HarnessAdapter } from "./harness/types.ts";
+import { piSession } from "../core/session.ts";
 import {
   registerPeer,
   updatePeerMeta,
@@ -329,6 +330,7 @@ export async function openPeer(opts: OpenPeerOpts): Promise<PeerInfo> {
     msgSeq: 0,
     createdAt: Date.now(),
     alive: true,
+    sessionId: piSession.id ?? undefined,
   };
   writePeerJson(peer);
   peers.set(peerId, peer);

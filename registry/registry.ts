@@ -45,10 +45,10 @@ const TASK_EXCERPT_MAX = 200;
  *
  * 比 `RunResult.status` 多了三个内部状态：
  *  - pending    : 分配了 runId 还没真正启动（未来 use，本阶段未使用）
- *  - orphan     : 进程重启前 wrapper 未写终态，自动标为孤儿
- *  - stuck      : 超阈值无 turn 更新（默认 5 分钟），由 stuck-detector 标
+ *  - orphan     : harness 已消失（pane 死/被关）而终态未落，孤儿认领标
+ *  - stuck      : 历史标记（stuck-detector 已删除），仅旧数据可见
  *
- * wrapper 终态写入（completed/failed）会覆盖 orphan/stuck，无需特殊处理。
+ * 文件契约的终态写入（completed/failed）会覆盖 orphan，无需特殊处理。
  */
 export type RunStatus =
   "pending" | "running" | "completed" | "failed" | "orphan" | "stuck";
@@ -665,21 +665,6 @@ function rowToRun(row: RegisteredRow): RegisteredRun {
     msgSeq: row.msg_seq ?? null,
     harness: row.harness ?? null,
   };
-}
-
-/** 列出所有"仍在进行"的 run（status IN running/stuck）。 */
-export function listActive(): RegisteredRun[] {
-  try {
-    const db = getRegistry();
-    const stmt = db.prepare(`
-      SELECT * FROM atelier_runs
-      WHERE status IN ('running', 'stuck')
-      ORDER BY started_at ASC
-    `);
-    return (stmt.all() as RegisteredRow[]).map(rowToRun);
-  } catch {
-    return [];
-  }
 }
 
 /**
