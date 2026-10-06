@@ -359,6 +359,9 @@ export function listRunning(
   const results: RunResult[] = [];
   for (const entry of fs.readdirSync(subagentsDir)) {
     const runDir = path.join(subagentsDir, entry);
+    // peer 目录不是独立 run——peer 消息在 registry 里有 <peerId>-m<seq> 行，
+    // 按目录扫会造出 runId=peerId 的幻影运行
+    if (fs.existsSync(path.join(runDir, "peer.json"))) continue;
     const status = readStatus(runDir);
     if (!status || status.status !== "running") continue;
 
