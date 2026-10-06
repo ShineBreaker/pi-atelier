@@ -1462,17 +1462,16 @@ export default function (pi: ExtensionAPI) {
       if (process.env.PI_SUBAGENT) return;
 
       // ── 0. 提取当前 pi session id + 一次性孤儿认领 ──────────────────
-      // session 文件首条 entry 即 {type:"session", id}；resume 场景读到
-      // 的是被恢复会话的原 id——满足「进入了相同的会话再扫该会话的记录」。
+      // getSessionId() 返回当前 session 文件 id（getEntries() 不含 header，
+      // 不能用 find(type==="session")）；resume 场景返回被恢复会话的原
+      // id——满足「进入了相同的会话再扫该会话的记录」。
       if (!piSession.id) {
         try {
-          const head = ctx.sessionManager
-            .getEntries()
-            .find((e) => (e as { type?: string }).type === "session") as
-            | { id?: string }
-            | undefined;
-          if (head?.id) {
-            piSession.id = head.id;
+          const sid =
+            ctx.sessionManager.getSessionId?.() ??
+            ctx.sessionManager.getHeader?.()?.id;
+          if (sid) {
+            piSession.id = sid;
             runOrphanRecoveryOnce();
           }
         } catch {
