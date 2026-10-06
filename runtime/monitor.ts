@@ -40,7 +40,9 @@ import { parseReturnHeader } from "../registry/return-header.ts";
 //   1. status.json {msgSeq>=seq, status≠running} —— 文件契约（主通道）
 //   2. herdr agent_status：观测到 working 后转 idle/done 连续 2 次
 //   3. transcript 稳定性：pane 尾部哈希先变化（说明在干活）后连续 4 次不变
-// 缺 result-N.md 时用 transcript 尾部兜底提取并补写，保证总有产出。
+// 「判定停止但 result-N.md 未落盘」→ 先注入一句补写指令给 peer（空闲 +
+// 上下文还在，一轮即可补救），继续轮询等文件契约命中；补救无效（再次
+// 判定停止仍无文件）才降级 transcript 尾部兜底提取代写，保证总有产出。
 
 /** peer 消息终态收集：读 result-N.md，缺则 transcript 兜底补写 */
 function collectPeerResult(
@@ -92,6 +94,9 @@ function writePeerStatus(
   }
 }
 
+/** 补写指令发出后给 peer 的处理窗口（超此仍无文件 → transcript 兜底） */
+const REMEDIATE_GRACE_MS = 90_000;
+
 /**
  * 等待 peer 的第 seq 条消息完成。
  *
@@ -128,6 +133,9 @@ export async function waitForPeerMessage(
   let sawWorking = false;
   let idlePolls = 0;
   let blockedSince: number | null = null;
+  // 补写补救状态：一次机会；发出后给 REMEDIATE_GRACE_MS 处理窗口
+  let remediated = false;
+  let remediatedAt = 0;
 
   const finish = (
     status: "completed" | "failed",
@@ -162,6 +170,47 @@ export async function waitForPeerMessage(
       tmuxPane: peer.paneId,
       error,
     };
+  };
+
+  /**
+   * 「判定停止但 result 未落盘」的收尾：
+   *   首次 → 注入一句补写指令（舵手消息，不动 seq/契约），继续轮询等
+   *          文件契约信号命中。peer 处理指令会重新产生活动，启发状态
+   *          （sawWorking/stablePolls）自然重置。
+   *   窗口内 → 保持等待（防停止信号复触立刻兜底）。
+   *   窗口后仍无文件 → 补救无效，transcript 兜底提取代写 + 收尾。
+   * @returns true 已 resolve（调用方 clearInterval 后 return）
+   */
+  const settleIdle = (): boolean => {
+    const resultPath = path.join(peer.peerDir, `result-${seq}.md`);
+    if (!fs.existsSync(resultPath)) {
+      if (!remediated) {
+        remediated = true;
+        remediatedAt = Date.now();
+        try {
+          backend?.sendText(
+            peer.paneId,
+            `检测到你已停止工作但未按契约落盘。请立即把本条任务的最终结果` +
+              `（顶部含 Return Header）写入 ${resultPath}，并把 ${statusPath}` +
+              ` 覆写为 {"status":"completed","msgSeq":${seq}}。除此之外不要做任何事。`,
+          );
+          console.warn(
+            `[atelier:monitor] ${msgId} 判定停止但未落盘，已发补写指令`,
+          );
+        } catch {
+          /* 发送失败：窗口过后走 transcript 兜底 */
+        }
+        return false;
+      }
+      if (Date.now() - remediatedAt < REMEDIATE_GRACE_MS) return false;
+    }
+    const { output, extracted } = collectPeerResult(peer, seq);
+    if (extracted) {
+      console.warn(`[atelier:monitor] ${msgId} 补写无效，transcript 兜底`);
+    }
+    writePeerStatus(peer, seq, "completed", undefined, startedAt);
+    resolve(finish("completed", output, 0));
+    return true;
   };
 
   return new Promise<RunResult>((resolve) => {
@@ -267,11 +316,11 @@ export async function waitForPeerMessage(
         if (sawWorking) {
           idlePolls += 1;
           if (idlePolls >= 2) {
-            clearInterval(interval);
-            const { output } = collectPeerResult(peer, seq);
-            writePeerStatus(peer, seq, "completed", undefined, startedAt);
-            resolve(finish("completed", output, 0));
-            return;
+            if (settleIdle()) {
+              clearInterval(interval);
+              return;
+            }
+            idlePolls = 0; // 补写等待中，防停止信号复触立即兜底
           }
         }
       }
@@ -285,11 +334,11 @@ export async function waitForPeerMessage(
       } else if (sawActivity) {
         stablePolls += 1;
         if (stablePolls >= 4 && !sawWorking) {
-          clearInterval(interval);
-          const { output } = collectPeerResult(peer, seq);
-          writePeerStatus(peer, seq, "completed", undefined, startedAt);
-          resolve(finish("completed", output, 0));
-          return;
+          if (settleIdle()) {
+            clearInterval(interval);
+            return;
+          }
+          stablePolls = 0; // 补写等待中，防停止信号复触立即兜底
         }
       }
     }, config.pollIntervalMs);
