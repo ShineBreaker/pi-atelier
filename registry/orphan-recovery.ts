@@ -67,7 +67,7 @@ function settleRun(
   run: { runId: string; runDir: string; msgSeq: number | null },
   status: "completed" | "failed",
   msgSeq: number | undefined,
-  error?: string,
+  error: string | undefined,
   now: number,
 ): void {
   try {
@@ -144,6 +144,22 @@ export function orphanRecovery(
 
         if (peer.alive === false) {
           settleRun(run, "failed", peer.msgSeq, ORPHAN_ERROR, now);
+          report.recovered++;
+          continue;
+        }
+
+        // 过期消息行：run.msgSeq < peer.msgSeq 说明 status.json 已被后续
+        // 派单覆写，这条 run 永远等不到自己的终态。只收尾 registry——
+        // 不能写 status.json（msgSeq 对齐防误判，但覆写 running 态仍会
+        // 干扰在跑的新消息的 peerBusy 判定）。
+        if (run.msgSeq != null && run.msgSeq < peer.msgSeq) {
+          updateRunStatus({
+            runId: run.runId,
+            status: "orphan",
+            exitCode: 1,
+            error: `superseded by msg ${peer.msgSeq}`,
+            finishedAt: now,
+          });
           report.recovered++;
           continue;
         }
