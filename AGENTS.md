@@ -36,8 +36,11 @@ atelier/
 │   ├── discovery.ts
 │   ├── schedule.ts
 │   ├── schemas.ts
+│   ├── session.ts
 │   ├── system-agents.ts
 │   └── types.ts
+├── docs/
+│   └── atelier.md
 ├── lifecycle/
 │   ├── checkpoint.ts
 │   ├── resume.ts
@@ -48,6 +51,10 @@ atelier/
 │   ├── registry.ts
 │   └── return-header.ts
 ├── runtime/
+│   ├── harness/
+│   │   ├── adapters.ts
+│   │   ├── resolve.ts
+│   │   └── types.ts
 │   ├── multiplexer/
 │   │   ├── detect.ts
 │   │   ├── herdr.ts
@@ -56,6 +63,7 @@ atelier/
 │   ├── formatting.ts
 │   ├── launcher.ts
 │   ├── monitor.ts
+│   ├── peer.ts
 │   ├── runner.ts
 │   ├── session-log.ts
 │   └── workfile.ts
