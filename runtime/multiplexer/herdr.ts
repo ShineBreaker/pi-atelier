@@ -25,7 +25,11 @@
  */
 
 import { execFileSync } from "node:child_process";
-import type { MultiplexerBackend } from "./types.ts";
+import type {
+  MultiplexerBackend,
+  MuxAgentStatus,
+  SplitShellOpts,
+} from "./types.ts";
 
 /** 同步执行 herdr 命令，返回 stdout（已 trim） */
 function herdrExec(args: string[]): string {
@@ -171,5 +175,109 @@ export class HerdrBackend implements MultiplexerBackend {
   /** 关闭 pane（herdr 子命令是 close 而非 kill）。失败静默。 */
   kill(paneId: string): void {
     herdrExecMaybe(["pane", "close", paneId]);
+  }
+
+  // ─── PR-12: peer 模式方法集 ─────────────────────────────────────────────
+
+  /**
+   * 分割空 shell pane（peer 模式入口）。不带 run 命令——harness TUI 由
+   * 后续 sendText(launchCommand) 启动。
+   *
+   * env 走 `pane split --env K=V`（herdr 原生支持，注入 pane 进程环境）。
+   */
+  splitShell(opts: SplitShellOpts): string {
+    const args = ["pane", "split"];
+    if (opts.direction === "right" && opts.targetPaneId) {
+      args.push(opts.targetPaneId, "--direction", "right");
+    } else {
+      args.push("--current", "--direction", "down");
+    }
+    args.push("--no-focus", "--ratio", String(opts.ratio));
+    if (opts.cwd) args.push("--cwd", opts.cwd);
+    if (opts.env) {
+      for (const [k, v] of Object.entries(opts.env)) {
+        args.push("--env", `${k}=${v}`);
+      }
+    }
+    return parsePaneId(herdrExec(args));
+  }
+
+  /**
+   * 向 pane 发文本 + Enter。
+   * pane run 对 shell pane 是执行命令；对已识别 agent 的 pane 等价于
+   * agent prompt（文本进 TUI 输入框并回车）。peer 模式两种用途共用此路。
+   */
+  sendText(paneId: string, text: string): void {
+    herdrExec(["pane", "run", paneId, text]);
+  }
+
+  /** 裸按键（Escape/Enter/Down/C-c），用于打断或应答权限门。 */
+  sendKeys(paneId: string, keys: string[]): void {
+    herdrExecMaybe(["pane", "send-keys", paneId, ...keys]);
+  }
+
+  /** 读 transcript 尾部（recent-unwrapped：软换行合并，适合日志/提取）。 */
+  readPane(paneId: string, lines = 120): string {
+    return (
+      herdrExecMaybe([
+        "pane",
+        "read",
+        paneId,
+        "--source",
+        "recent-unwrapped",
+        "--lines",
+        String(lines),
+      ]) ?? ""
+    );
+  }
+
+  /**
+   * pane 内 agent 的语义状态。
+   * agent get 失败（pane 无 agent/已关）→ null；检测到 agent 但状态未明
+   * → "unknown"（herdr 自己的枚举值）。
+   */
+  agentStatus(paneId: string): MuxAgentStatus | null {
+    const out = herdrExecMaybe(["agent", "get", paneId]);
+    if (!out) return null;
+    try {
+      const parsed = JSON.parse(out) as {
+        result?: { agent?: { agent_status?: string } | null };
+      };
+      const status = parsed?.result?.agent?.agent_status;
+      if (parsed?.result?.agent == null || !status) return null;
+      if (
+        status === "idle" ||
+        status === "working" ||
+        status === "blocked" ||
+        status === "done" ||
+        status === "unknown"
+      ) {
+        return status;
+      }
+      return "unknown";
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * pane 内 agent 原生 session 标识（agent_session.value，如
+   * "20261006_204701_7786a4"）。供 native session 文件定位用。
+   */
+  agentSession(paneId: string): string | null {
+    const out = herdrExecMaybe(["agent", "get", paneId]);
+    if (!out) return null;
+    try {
+      const parsed = JSON.parse(out) as {
+        result?: {
+          agent?: {
+            agent_session?: { value?: string } | null;
+          } | null;
+        };
+      };
+      return parsed?.result?.agent?.agent_session?.value ?? null;
+    } catch {
+      return null;
+    }
   }
 }

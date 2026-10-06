@@ -17,6 +17,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type {
   AgentConfig,
   AgentModelConfig,
+  PeerInfo,
   RunResult,
   SubagentConfig,
 } from "../core/types.ts";
@@ -26,11 +27,18 @@ import {
 } from "../core/schedule.ts";
 import {
   generateRunId,
-  launchParallel,
-  launchSingle,
   paneIsAlive,
 } from "./launcher.ts";
-import { waitForAll, waitForCompletion } from "./monitor.ts";
+import { waitForPeerMessage } from "./monitor.ts";
+import {
+  closePeer,
+  openPeer,
+  sendToPeer,
+} from "./peer.ts";
+import {
+  getAdapter,
+  resolveRouteChain,
+} from "./harness/resolve.ts";
 import { ensureWorkfile } from "./workfile.ts";
 import { isSystemAgent } from "../core/system-agents.ts";
 import {
@@ -157,14 +165,15 @@ export function resolveModelChain(
 }
 
 /**
- * 带 fallback 重试的单 agent 执行。
+ * PR-12: peer 化派发 — 解析路由链，逐个 harness 开 peer 尝试。
  *
- * 对同一任务尝试不同的模型（最多 MAX_ATTEMPTS 次）：
- *   1. 用首选模型执行
- *   2. 如果失败，用 fallback 链中的下一个模型重试
- *   3. 所有模型都失败后，返回最后一个失败结果
+ * 对同一任务按路由链尝试不同的 (harness, model)（最多 MAX_ATTEMPTS 次）：
+ *   1. 开 peer（splitShell + 起 TUI）→ send 第一条消息 → wait 收结果
+ *   2. 失败 → closePeer 退役该 pane，用链中下一个路由重试
+ *   3. 全部失败 → 返回最后一个失败结果
  *
- * 对 abort/timeout 不重试（这些不是模型问题）。
+ * 对 abort/timeout/blocked 不重试（不是路由问题；且 timeout/blocked 的
+ * peer 仍存活，主 agent 可 send 救活）。
  */
 export async function executeWithFallback(
   agent: AgentConfig,
@@ -180,45 +189,84 @@ export async function executeWithFallback(
   isSystemSpawned?: boolean,
   // PR-10: chain/parallel 内的 parent run id(由 runChain/runParallelBatches 生成)
   parentRunId?: string,
+  // PR-12: 显式 harness 覆盖（params.harness）
+  explicitHarness?: string,
 ): Promise<RunResult> {
   const resolvedSystem = isSystemSpawned ?? isSystemAgent(agent.name);
-  const modelChain = resolveModelChain(agent, config, explicitModel);
-
-  // 把 resolvedSystem 闭包到一个本地 helper 中,避免在两处 launchSingle 重复写 9 个参数
-  const launchWith = (model: string | undefined) =>
-    launchSingle(
-      agent,
-      task,
-      config,
-      cwd,
-      model,
-      topRowTargetPaneId,
-      splitPercent ?? 50,
-      images,
-      resolvedSystem,
-      parentRunId,
-    );
-
-  if (modelChain.length === 0) {
-    const launch = launchWith(undefined);
-    return waitForCompletion(launch, config, signal);
-  }
+  const routes = resolveRouteChain(
+    agent,
+    config,
+    explicitHarness || explicitModel
+      ? { harness: explicitHarness, model: explicitModel }
+      : undefined,
+  );
 
   let lastResult: RunResult | undefined;
-  const maxAttempts = Math.min(MAX_ATTEMPTS, modelChain.length);
+  let lastError: string | undefined;
+  const maxAttempts = Math.min(MAX_ATTEMPTS, routes.length);
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const launch = launchWith(modelChain[attempt]);
-    const result = await waitForCompletion(launch, config, signal);
+    const route = routes[attempt];
+    const adapter = getAdapter(route.harness);
+    if (!adapter || !adapter.interactive) {
+      lastError = `harness "${route.harness}" 不可用`;
+      console.warn(`[atelier:route] ${lastError}，跳过`);
+      continue;
+    }
+
+    let peer;
+    try {
+      peer = await openPeer({
+        agent,
+        route,
+        adapter,
+        config,
+        cwd,
+        rightOfPaneId: topRowTargetPaneId,
+        splitRatio: (splitPercent ?? 50) / 100,
+        isSystemSpawned: resolvedSystem,
+        parentRunId,
+      });
+    } catch (err) {
+      lastError = (err as Error).message;
+      console.warn(
+        `[atelier:peer] openPeer(${route.harness}) 失败:`,
+        lastError,
+      );
+      continue;
+    }
+
+    const sent = sendToPeer(peer, task, { images, parentRunId });
+    const result = await waitForPeerMessage(peer, sent.seq, config, signal);
 
     if (result.status === "completed") return result;
 
     lastResult = result;
-    // abort 或超时不重试——这不是模型问题
-    if (result.error === "Aborted" || result.error === "timeout") return result;
+    // abort/timeout/blocked 不重试——不是路由问题；timeout/blocked 时
+    // peer 仍存活，留给主 agent 用 send 救活
+    if (
+      result.error === "Aborted" ||
+      result.error === "timeout" ||
+      result.error === "blocked"
+    ) {
+      return result;
+    }
+    // 普通失败：退役该 peer，尝试链中下一个路由
+    closePeer(peer);
   }
 
-  return lastResult!;
+  return (
+    lastResult ?? {
+      runId: "(none)",
+      agent: agent.name,
+      status: "failed",
+      exitCode: 1,
+      output: `没有可用的 harness（所有路由均失败）。最后错误: ${lastError ?? "unknown"}`,
+      durationMs: 0,
+      tmuxPane: "",
+      error: lastError ?? "no harness available",
+    }
+  );
 }
 
 // ─── 并行执行 ────────────────────────────────────────────────────────────────
@@ -226,12 +274,16 @@ export async function executeWithFallback(
 /**
  * 并行执行多批任务，每批不超过 maxConcurrency。
  *
- * 布局效果（以 3 个任务为例）：
- *   ┌──────────┬──────────┬──────────┐
- *   │  task1   │  task2   │  task3   │   ← 上方行，水平等分
- *   ├──────────┴──────────┴──────────┤
+ * PR-12 peer 化：每个任务开一个 peer（第一个垂直分割开新行，后续在行内
+ * 右侧水平分割），send 后 waitForPeerMessage 收结果。peer 完成后存活
+ * （可 send 复用），不自动关 pane。
+ *
+ * 布局效果（以 3 个任务为例，herdr 下新行在下方）：
+ *   ┌───────────────────────────────┐
  *   │  主 agent                      │
- *   └────────────────────────────────┘
+ *   ├──────────┬──────────┬──────────┤
+ *   │  peer1   │  peer2   │  peer3   │   ← 新行，水平等分
+ *   └──────────┴──────────┴──────────┘
  */
 export async function runParallelBatches(
   tasks: Array<{ agent: AgentConfig; task: string; cwd?: string }>,
@@ -239,6 +291,10 @@ export async function runParallelBatches(
   cwd: string,
   explicitModel?: string,
   signal?: AbortSignal,
+  // PR-12: 显式 harness 覆盖（作用于全部任务）
+  explicitHarness?: string,
+  // PR-12: 异步派发时由调用方预生成 parentRunId（wait:false 的句柄）
+  parentRunIdIn?: string,
 ): Promise<RunResult[]> {
   const results: RunResult[] = [];
   const concurrency = Math.max(
@@ -246,26 +302,79 @@ export async function runParallelBatches(
     Math.min(config.maxConcurrency, config.maxTasks),
   );
   const startedAt = Date.now();
-  let topRowTargetPaneId: string | undefined;
+  const parentRunId = parentRunIdIn ?? generateRunId();
+  let rowAnchorPaneId: string | undefined;
 
   for (let i = 0; i < tasks.length; i += concurrency) {
     const batch = tasks.slice(i, i + concurrency);
-    // 如果上一个 batch 的 pane 已关闭，重置续接点，让 launchParallel 重新创建顶部行
-    if (topRowTargetPaneId && !paneIsAlive(topRowTargetPaneId)) {
-      topRowTargetPaneId = undefined;
+    if (rowAnchorPaneId && !paneIsAlive(rowAnchorPaneId)) {
+      rowAnchorPaneId = undefined;
     }
-    const launches = launchParallel(
-      batch,
-      config,
-      // 注意：parallel 模式下所有任务共享同一 explicitModel（如提供），
-      // 否则每个 agent 从自己的 tier 解析 model。
-      // TODO: 如果需要 per-agent fallback，需要改为逐个 launchSingle
-      explicitModel,
-      topRowTargetPaneId,
+
+    const pending: Array<{ peer: PeerInfo; seq: number }> = [];
+
+    for (const t of batch) {
+      // parallel 模式逐任务解析路由链，取首个可用候选
+      // （per-task fallback 重试由主 agent 看结果后自行决定，不在此处展开）
+      const routes = resolveRouteChain(
+        t.agent,
+        config,
+        explicitHarness || explicitModel
+          ? { harness: explicitHarness, model: explicitModel }
+          : undefined,
+      );
+      const route = routes.find((r) => {
+        const a = getAdapter(r.harness);
+        return a !== null && a.interactive;
+      });
+      if (!route) {
+        results.push({
+          runId: "(none)",
+          agent: t.agent.name,
+          status: "failed",
+          exitCode: 1,
+          output: "没有可用 harness",
+          durationMs: 0,
+          tmuxPane: "",
+          error: "no harness available",
+        });
+        continue;
+      }
+      try {
+        const adapter = getAdapter(route.harness)!;
+        const peer = await openPeer({
+          agent: t.agent,
+          route,
+          adapter,
+          config,
+          cwd: t.cwd ?? cwd,
+          rightOfPaneId: rowAnchorPaneId,
+          splitRatio: rowAnchorPaneId ? 0.5 : 0.4,
+          parentRunId,
+        });
+        rowAnchorPaneId = peer.paneId;
+        const sent = sendToPeer(peer, t.task, {
+          parentRunId,
+          mode: "parallel",
+        });
+        pending.push({ peer, seq: sent.seq });
+      } catch (err) {
+        results.push({
+          runId: "(none)",
+          agent: t.agent.name,
+          status: "failed",
+          exitCode: 1,
+          output: `peer 启动失败: ${(err as Error).message}`,
+          durationMs: 0,
+          tmuxPane: "",
+          error: (err as Error).message,
+        });
+      }
+    }
+
+    const batchResults = await Promise.all(
+      pending.map((p) => waitForPeerMessage(p.peer, p.seq, config, signal)),
     );
-    // 记录最后一个 pane 作为后续 batch 的续接点
-    topRowTargetPaneId = launches[launches.length - 1].paneId;
-    const batchResults = await waitForAll(launches, config, signal);
     results.push(...batchResults);
   }
 
@@ -304,15 +413,22 @@ export async function runChain(
   rootTask?: string,
   explicitModel?: string,
   signal?: AbortSignal,
+  // PR-12: 显式 harness 覆盖
+  explicitHarness?: string,
+  // PR-12: 异步派发时由调用方预生成 parentRunId（wait:false 的句柄）
+  parentRunIdIn?: string,
 ): Promise<RunResult[]> {
   const results: RunResult[] = [];
   let previous = rootTask ?? "";
-  let topRowTargetPaneId: string | undefined;
+  let rowAnchorPaneId: string | undefined;
+  /** PR-12: 上一步的 peer——同 agent+同 harness 时复用（上下文零损耗） */
+  let prevPeer: PeerInfo | null = null;
   const startedAt = Date.now();
 
   // PR-10: 为整个 chain 生成一个 parentRunId；所有 step 的 registerRun 关联到此 id。
   // 同时创建 checkpoint（5 节格式 YAML）与 Workflow（PR-11 JSON）并持久化。
-  const parentRunId = generateRunId();
+  // PR-12: 异步派发时调用方预生成（wait:false 返回给主 agent 的句柄）。
+  const parentRunId = parentRunIdIn ?? generateRunId();
   const intent = (rootTask ?? steps[0]?.task ?? "").slice(0, 200);
 
   let checkpoint: ReturnType<typeof createCheckpoint> | null = null;
@@ -365,23 +481,84 @@ export async function runChain(
     const task = step.task
       .replaceAll("{previous}", previous)
       .replaceAll("{task}", rootTask ?? previous);
-    // 计算水平分割百分比，确保等分
-    const pct = Math.round(((steps.length - i) / (steps.length - i + 1)) * 100);
 
-    // 使用带 fallback 的执行（PR-10: 传入 parentRunId 关联到 atelier_runs.parent_run_id）
-    const result = await executeWithFallback(
+    // PR-12: peer 化 dispatch —— 同 agent+同 harness 且存活时复用上一步
+    // peer（peer 保有全部上下文，{previous} 替换只作冗余保险）；否则开新
+    // peer 并在行内右接前 pane。
+    const routes = resolveRouteChain(
       step.agent,
-      task,
       config,
-      step.cwd ?? cwd,
-      explicitModel,
-      signal,
-      topRowTargetPaneId,
-      pct,
-      undefined, // images
-      undefined, // isSystemSpawned
-      parentRunId,
+      explicitHarness || explicitModel
+        ? { harness: explicitHarness, model: explicitModel }
+        : undefined,
     );
+    const route = routes.find((r) => {
+      const a = getAdapter(r.harness);
+      return a !== null && a.interactive;
+    });
+
+    let result: RunResult;
+    let stepPeer: PeerInfo | null = null;
+    const reusable =
+      route &&
+      prevPeer &&
+      prevPeer.alive &&
+      paneIsAlive(prevPeer.paneId) &&
+      prevPeer.agent === step.agent.name &&
+      prevPeer.harness === route.harness;
+
+    if (reusable && prevPeer) {
+      stepPeer = prevPeer;
+      const sent = sendToPeer(prevPeer, task, {
+        parentRunId,
+        mode: "chain",
+      });
+      result = await waitForPeerMessage(prevPeer, sent.seq, config, signal);
+    } else if (route) {
+      try {
+        const adapter = getAdapter(route.harness)!;
+        const peer = await openPeer({
+          agent: step.agent,
+          route,
+          adapter,
+          config,
+          cwd: step.cwd ?? cwd,
+          rightOfPaneId: rowAnchorPaneId,
+          splitRatio: rowAnchorPaneId ? 0.5 : 0.4,
+          parentRunId,
+        });
+        stepPeer = peer;
+        rowAnchorPaneId = peer.paneId;
+        const sent = sendToPeer(peer, task, {
+          parentRunId,
+          mode: "chain",
+        });
+        result = await waitForPeerMessage(peer, sent.seq, config, signal);
+      } catch (err) {
+        result = {
+          runId: "(none)",
+          agent: step.agent.name,
+          status: "failed",
+          exitCode: 1,
+          output: `peer 启动失败: ${(err as Error).message}`,
+          durationMs: 0,
+          tmuxPane: "",
+          error: (err as Error).message,
+        };
+      }
+    } else {
+      result = {
+        runId: "(none)",
+        agent: step.agent.name,
+        status: "failed",
+        exitCode: 1,
+        output: "没有可用 harness",
+        durationMs: 0,
+        tmuxPane: "",
+        error: "no harness available",
+      };
+    }
+    prevPeer = stepPeer && stepPeer.alive ? stepPeer : null;
 
     // 验证 workfile
     if (result.status === "completed") {

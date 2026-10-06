@@ -92,7 +92,7 @@ function ensureWrapperExecutable(): string {
   return wrapper;
 }
 
-/** 清理过期的运行记录 */
+/** 清理过期的运行记录（跳过存活 peer 目录——peer 是持久资产） */
 export function cleanupOldRuns(config: SubagentConfig): void {
   if (config.keepResults <= 0) return;
 
@@ -113,6 +113,17 @@ export function cleanupOldRuns(config: SubagentConfig): void {
       return { name, runDir, status, mtimeMs };
     })
     .filter((run) => run.status?.status !== "running")
+    // PR-12: peer.json alive=true 的目录是活 peer 的资产，永不清
+    .filter((run) => {
+      try {
+        const peer = JSON.parse(
+          fs.readFileSync(path.join(run.runDir, "peer.json"), "utf-8"),
+        ) as { alive?: boolean };
+        return peer.alive !== true;
+      } catch {
+        return true; // 无 peer.json → 普通 run 目录，照常清理
+      }
+    })
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
 
   for (const run of runs.slice(config.keepResults)) {

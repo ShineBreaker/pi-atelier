@@ -119,8 +119,12 @@ export async function openConfigPanel(
 
       // ── tiers ──────────────────────────────────────────────────────────────
 
-      const tierValue = (name: string): string =>
-        draft.tiers[name].model || "(未设置 model)";
+      // PR-12: routes 优先展示（harness/model 混合路由链），旧式退回 model
+      const tierValue = (name: string): string => {
+        const t = draft.tiers[name];
+        if (t.routes && t.routes.length > 0) return t.routes.join(" → ");
+        return t.model || "(未设置 model)";
+      };
 
       const buildTierList = (
         closeList: (value?: string) => void,

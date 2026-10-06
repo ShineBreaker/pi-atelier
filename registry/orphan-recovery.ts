@@ -17,7 +17,27 @@
  * 内（通常 < 5s）会误杀已完成的 run；30s 是保守安全值。
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { listUnsettled, updateRunStatus } from "./registry.ts";
+
+/**
+ * peer 消息行（peer_id 非空）的 orphan 豁免判定：
+ * peer pane 独立于 pi 进程存活（herdr/tmux session 不因 pi 重启而死），
+ * 所以 pi 崩溃重启时 peer 可能仍在跑。读磁盘 peer.json——alive:true 且
+ * status.json 仍为 running 的消息留给 monitor/文件契约收尾，不标 orphan。
+ * （不引入 runtime/launcher 依赖——保持 registry → core 单向。）
+ */
+function isLivePeerMsg(runDir: string): boolean {
+  try {
+    const peerJson = JSON.parse(
+      fs.readFileSync(path.join(runDir, "peer.json"), "utf-8"),
+    ) as { alive?: boolean };
+    return peerJson.alive === true;
+  } catch {
+    return false;
+  }
+}
 
 /** 启动 grace 期（ms），期内启动的新 run 不标 orphan */
 const STARTUP_GRACE_MS = 30_000;
@@ -59,6 +79,12 @@ export function orphanRecovery(now: number = Date.now()): OrphanRecoveryReport {
     }
 
     if (now - run.startedAt < STARTUP_GRACE_MS) {
+      report.skippedByGrace++;
+      continue;
+    }
+
+    // PR-12: peer 消息行且 peer 仍存活 → 不是孤儿（pi 崩了 pane 还活着）
+    if (run.peerId && isLivePeerMsg(run.runDir)) {
       report.skippedByGrace++;
       continue;
     }

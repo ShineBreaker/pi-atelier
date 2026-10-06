@@ -78,11 +78,16 @@ export function discoverAgents(): AgentConfig[] {
       // tier 字段：ultra / pro / quick / visual / inherit，缺失为 undefined
       const tier = frontmatter.tier?.trim() || undefined;
 
+      // PR-12: harness pin（claude/codex/hermes/任意 binary 名），
+      // 指定后该 agent 只在该 harness 上运行
+      const harness = frontmatter.harness?.trim() || undefined;
+
       agents.push({
         name: frontmatter.name,
         description: frontmatter.description,
         tools: tools && tools.length > 0 ? tools : undefined,
         tier,
+        harness,
         systemPrompt: body,
         filePath,
       });

@@ -109,7 +109,41 @@ export function loadConfig(): SubagentConfig {
         : DEFAULT_CONFIG.defaultTier,
     tiers: parseTiers(raw.tiers),
     modelSchedules: parseModelSchedules(raw.modelSchedules),
+    peerApproval:
+      raw.peerApproval === "full" ||
+      raw.peerApproval === "safe" ||
+      raw.peerApproval === "off"
+        ? raw.peerApproval
+        : DEFAULT_CONFIG.peerApproval,
+    blockedGraceMs:
+      typeof raw.blockedGraceMs === "number"
+        ? raw.blockedGraceMs
+        : DEFAULT_CONFIG.blockedGraceMs,
+    peerReadyTimeoutMs:
+      typeof raw.peerReadyTimeoutMs === "number"
+        ? raw.peerReadyTimeoutMs
+        : DEFAULT_CONFIG.peerReadyTimeoutMs,
+    maxPeers:
+      typeof raw.maxPeers === "number"
+        ? raw.maxPeers
+        : DEFAULT_CONFIG.maxPeers,
+    harnessArgs: parseHarnessArgs(raw.harnessArgs),
   };
+}
+
+/** 从 atelier.harnessArgs 段解析 per-harness 追加参数 */
+function parseHarnessArgs(raw: unknown): Record<string, string[]> {
+  if (!raw || typeof raw !== "object") return {};
+  const result: Record<string, string[]> = {};
+  for (const [harness, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (Array.isArray(value)) {
+      const args = value.filter((x): x is string => typeof x === "string");
+      if (args.length > 0) result[harness] = args;
+    } else if (typeof value === "string" && value.trim()) {
+      result[harness] = value.trim().split(/\s+/);
+    }
+  }
+  return result;
 }
 
 /**
@@ -162,18 +196,46 @@ export function saveConfig(cfg: SubagentConfig): string {
   return target.path;
 }
 
-/** 从 settings.json 的 atelier.tiers 段解析 tier 配置 */
+/**
+ * 从 settings.json 的 atelier.tiers 段解析 tier 配置。
+ *
+ * PR-12: 每个 tier 支持三种形态，统一归一到 routes（harness/model 混合路由）：
+ *   - string:                    "claude/sonnet"          → routes=[该串]
+ *   - string[]:                  ["claude/sonnet","pi/…"]  → routes=数组
+ *   - {model, fallback, routes}: routes 优先；否则 [model,...fallback]
+ * 旧式 {model, fallback[]} 完全兼容（裸模型名解析时默认 pi harness）。
+ */
 function parseTiers(raw: unknown): Record<string, AgentModelConfig> {
   if (!raw || typeof raw !== "object") return DEFAULT_CONFIG.tiers;
   const result: Record<string, AgentModelConfig> = {};
+  const asRoutes = (v: unknown): string[] | undefined => {
+    if (typeof v === "string" && v.trim()) return [v.trim()];
+    if (Array.isArray(v)) {
+      const arr = v.filter(
+        (x): x is string => typeof x === "string" && x.trim().length > 0,
+      );
+      if (arr.length > 0) return arr.map((s) => s.trim());
+    }
+    return undefined;
+  };
   for (const [name, value] of Object.entries(raw)) {
-    if (!value || typeof value !== "object") continue;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      const routes = asRoutes(value);
+      if (routes) result[name] = { model: "", fallback: [], routes };
+      continue;
+    }
     const v = value as Record<string, unknown>;
-    if (typeof v.model !== "string") continue;
-    const fallback = Array.isArray(v.fallback)
-      ? v.fallback.filter((f): f is string => typeof f === "string")
-      : [];
-    result[name] = { model: v.model, fallback };
+    const routes =
+      asRoutes(v.routes) ??
+      asRoutes([v.model, ...(Array.isArray(v.fallback) ? v.fallback : [])]);
+    if (!routes) continue;
+    result[name] = {
+      model: typeof v.model === "string" ? v.model : "",
+      fallback: Array.isArray(v.fallback)
+        ? v.fallback.filter((f): f is string => typeof f === "string")
+        : [],
+      routes,
+    };
   }
   return result;
 }

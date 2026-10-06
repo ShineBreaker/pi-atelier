@@ -36,17 +36,42 @@ import type {
   AgentToolResult,
   ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentConfig, RunResult, SubagentDetails } from "./core/types.ts";
+import type {
+  AgentConfig,
+  PeerInfo,
+  RunResult,
+  SubagentDetails,
+} from "./core/types.ts";
 import { loadConfig } from "./core/config.ts";
 import { discoverAgents, discoverPrompts } from "./core/discovery.ts";
 import { ensureWorkfile } from "./runtime/workfile.ts";
-import { getRunDir, launchSingle } from "./runtime/launcher.ts";
-import { waitForCompletion, listRunning } from "./runtime/monitor.ts";
+import {
+  generateRunId,
+  getRunDir,
+} from "./runtime/launcher.ts";
+import {
+  waitForPeerMessage,
+  listRunning,
+} from "./runtime/monitor.ts";
+import {
+  closePeer,
+  findReusablePeer,
+  getPeer,
+  listPeers,
+  openPeer,
+  readPeer,
+  sendToPeer,
+  peerBusy,
+} from "./runtime/peer.ts";
+import {
+  getAdapter,
+  listAvailableHarnesses,
+  resolveRouteChain,
+} from "./runtime/harness/resolve.ts";
 import {
   executeWithFallback,
   runParallelBatches,
   runChain,
-  resolveModelChain,
   readDefaultModelFromSettings,
 } from "./runtime/runner.ts";
 import { formatResults } from "./runtime/formatting.ts";
@@ -171,7 +196,7 @@ function workerSingleWarnResponse(): AgentToolResult<SubagentDetails> {
 
 /** 创建 makeDetails 工厂 */
 const makeDetails =
-  (mode: "single" | "parallel" | "chain" | "list" | "status") =>
+  (mode: SubagentDetails["mode"]) =>
   (results: RunResult[]): SubagentDetails => ({
     mode,
     results,
@@ -233,13 +258,38 @@ export default function (pi: ExtensionAPI) {
 
   // ── 注册 subagent 工具 ──────────────────────────────────────────────────
 
+  // ── PR-12: 异步后台任务表（wait:false 的 chain/tasks 派发挂这里）────────
+  // promise 挂兜底 catch：派发失败转成 failed RunResult（wait 总能拿到结果，
+  // 也避免永不被 wait 时变成 unhandled rejection）
+  const pendingOps = new Map<
+    string,
+    { mode: "chain" | "parallel"; p: Promise<RunResult[]> }
+  >();
+  const pendingCatch = (p: Promise<RunResult[]>): Promise<RunResult[]> =>
+    p.catch((err) => [
+      {
+        runId: "(none)",
+        agent: "(batch)",
+        status: "failed" as const,
+        exitCode: 1,
+        output: `后台批次异常: ${(err as Error).message}`,
+        durationMs: 0,
+        tmuxPane: "",
+        error: (err as Error).message,
+      },
+    ]);
+
   pi.registerTool({
     name: "subagent",
     label: "Subagent",
     description: [
-      "通过 tmux 分屏可视化执行 subagent 任务。",
-      "模式：single (agent + task)、parallel (tasks 数组)、chain (chain 数组)。",
-      "管理：action: list 列出可用 agent 和 prompt 模板，action: status 查看运行状态。",
+      "派发到持久 peer（分屏 pane 里跑各类 agent harness：claude/codex/hermes/pi/…，",
+      "按 tier 路由解析，外部 harness 优先）。peer 跑完不退出，可随时 send 新指令。",
+      "派发：{agent, task} 单发、{tasks:[...]} 并行、{chain:[...]} 串行链。",
+      "默认异步返回句柄 peerId；wait:true 阻塞收结果。",
+      "管理：action=send 向 peer 追加指令（忙碌=纠偏、空闲=新任务）；",
+      "action=wait 收结果；action=read 看实时输出；action=peers 看存活池；",
+      "action=close 退役 peer；action=list 看 agent/harness 清单。",
     ].join(" "),
     parameters: SubagentParams,
 
@@ -261,14 +311,14 @@ export default function (pi: ExtensionAPI) {
           .map((a) => {
             const tools = a.tools ? a.tools.join(", ") : "all";
             const tier = a.tier ?? config.defaultTier;
-            const tierCfg = config.tiers[tier];
-            const model =
+            // PR-12: tier 现在是有序路由链（harness/model 混合条目）
+            const routes =
               tier === "inherit"
-                ? (readDefaultModelFromSettings()[0] ?? "(inherit)")
-                : tierCfg
-                  ? tierCfg.model
-                  : "(unknown tier)";
-            return `| ${a.name} | ${tier} | ${model} | ${a.description.slice(0, 40)}… | ${tools} |`;
+                ? [`pi/${readDefaultModelFromSettings()[0] ?? "(inherit)"}`]
+                : resolveRouteChain(a, config).map(
+                    (r) => `${r.harness}${r.model ? `/${r.model}` : ""}`,
+                  );
+            return `| ${a.name} | ${tier} | ${routes.join(" → ") || "(no route)"} | ${a.description.slice(0, 36)}… | ${tools} |`;
           })
           .join("\n");
         const promptLines = prompts
@@ -277,11 +327,20 @@ export default function (pi: ExtensionAPI) {
               `| ${p.name} | ${p.mode} | ${p.description.slice(0, 40)}… | /${p.name} <${p.param}> |`,
           )
           .join("\n");
+        const harnessLines = listAvailableHarnesses()
+          .map(
+            (h) =>
+              `- **${h.kind}** ${h.available ? "✓" : "✗"}${h.binary ? ` (\`${h.binary}\`)` : ""}${h.interactive ? " ·interactive" : ""}${h.batch ? " ·batch" : ""}`,
+          )
+          .join("\n");
         const list = [
           "## Agents",
-          "| Name | Tier | Model | Description | Tools |",
-          "|------|------|-------|-------------|-------|",
+          "| Name | Tier | Route (harness/model) | Description | Tools |",
+          "|------|------|----------------------|-------------|-------|",
           agentLines || "| (none) | | | | |",
+          "",
+          "## Harnesses",
+          harnessLines || "(none detected)",
           "",
           "## Prompt Templates",
           "| Name | Mode | Description | Usage |",
@@ -296,6 +355,222 @@ export default function (pi: ExtensionAPI) {
             },
           ],
           details: makeDetails("list")([]),
+        };
+      }
+
+      // ── action: peers — 存活 peer 池 ──────────────────────────────────
+
+      if (params.action === "peers") {
+        const peers = listPeers();
+        if (peers.length === 0) {
+          return {
+            content: [{ type: "text", text: "无存活 peer" }],
+            details: makeDetails("peers")([]),
+          };
+        }
+        const lines = peers.map((p) => {
+          const busy = peerBusy(p);
+          return (
+            `| ${p.peerId} | ${p.agent} | ${p.harness} | ${p.paneId} | ` +
+            `${p.alive ? (busy ? `busy(msg#${p.msgSeq})` : "idle") : "dead"} | ` +
+            `${p.nativeSessionId ?? "-"} |`
+          );
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: [
+                "## Peers",
+                "| PeerId | Agent | Harness | Pane | State | NativeSession |",
+                "|--------|-------|---------|------|-------|---------------|",
+                ...lines,
+                "",
+                "操作：send(id,task) 追加指令 · wait(id) 收结果 · read(id) 看输出 · close(id) 退役",
+              ].join("\n"),
+            },
+          ],
+          details: makeDetails("peers")([]),
+        };
+      }
+
+      // ── action: send — 向存活 peer 随时追加指令 ────────────────────────
+
+      if (params.action === "send") {
+        const task = params.task;
+        if (!task) {
+          return {
+            content: [{ type: "text", text: "send 需要 task 参数" }],
+            details: makeDetails("send")([]),
+            isError: true,
+          };
+        }
+        let peer: PeerInfo | null = null;
+        if (params.id) {
+          peer = getPeer(params.id);
+          if (!peer) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `peer "${params.id}" 不存在或已关闭（可用 peers: ${listPeers()
+                    .map((p) => p.peerId)
+                    .join(", ") || "none"}）`,
+                },
+              ],
+              details: makeDetails("send")([]),
+              isError: true,
+            };
+          }
+        } else if (params.agent) {
+          // 按角色找空闲 peer；没有则落到下方 single 派发新开 peer
+          peer = findReusablePeer({ agent: params.agent });
+        }
+        if (peer) {
+          const busyBefore = peerBusy(peer);
+          const sent = sendToPeer(peer, task, { images: params.images });
+          if (params.wait) {
+            const result = await waitForPeerMessage(peer, sent.seq, config, signal);
+            return {
+              content: [{ type: "text", text: result.output }],
+              details: makeDetails("send")([result]),
+              isError: result.status === "failed" || undefined,
+            };
+          }
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `已发送到 peer **${peer.peerId}** (${peer.harness}) msg #${sent.seq}` +
+                  (busyBefore
+                    ? " —— peer 忙碌中，文本已注入输入框（舵手消息）"
+                    : " —— peer 空闲，作为新任务执行") +
+                  `\n收结果：action:wait id=${peer.peerId} · 看进度：action:read id=${peer.peerId}`,
+              },
+            ],
+            details: makeDetails("send")([]),
+          };
+        }
+        // peer 未找到且给了 agent → 落到下方 single 派发新开 peer
+        if (!params.agent) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "send 需要 id（peerId）或 agent（自动找空闲 peer）",
+              },
+            ],
+            details: makeDetails("send")([]),
+            isError: true,
+          };
+        }
+        // 继续走下方 single 派发（agent+task 已齐）
+      }
+
+      // ── action: wait — 显式收结果 ──────────────────────────────────────
+
+      if (params.action === "wait") {
+        if (!params.id) {
+          return {
+            content: [{ type: "text", text: "wait 需要 id（peerId 或 batchId）" }],
+            details: makeDetails("wait")([]),
+            isError: true,
+          };
+        }
+        // 先查 pendingOps（wait:false 派发的 chain/parallel 批次）
+        const pending = pendingOps.get(params.id);
+        if (pending) {
+          pendingOps.delete(params.id);
+          const results = await pending.p;
+          appendSessionLog(pending.mode, results);
+          return {
+            content: [{ type: "text", text: formatResults(results) }],
+            details: makeDetails("wait")(results),
+            isError: results.some((r) => r.status === "failed") || undefined,
+          };
+        }
+        // msgId 形式 "<peerId>-m<seq>" → 精确收某条消息
+        const m = params.id.match(/^(.*)-m(\d+)$/);
+        const peer = getPeer(m ? m[1] : params.id);
+        if (!peer) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `未找到 peer/batch "${params.id}"（peers: ${listPeers()
+                  .map((p) => p.peerId)
+                  .join(", ") || "none"}）`,
+              },
+            ],
+            details: makeDetails("wait")([]),
+            isError: true,
+          };
+        }
+        const seq = m ? Number.parseInt(m[2], 10) : peer.msgSeq;
+        const result = await waitForPeerMessage(peer, seq, config, signal);
+        if (result.status === "completed") {
+          ensureWorkfile(result, effectiveCwd, Date.now() - result.durationMs);
+        }
+        return {
+          content: [{ type: "text", text: result.output }],
+          details: makeDetails("wait")([result]),
+          isError: result.status === "failed" || undefined,
+        };
+      }
+
+      // ── action: read — 拉 peer transcript 尾部 ────────────────────────
+
+      if (params.action === "read") {
+        if (!params.id) {
+          return {
+            content: [{ type: "text", text: "read 需要 id（peerId）" }],
+            details: makeDetails("read")([]),
+            isError: true,
+          };
+        }
+        const peer = getPeer(params.id);
+        if (!peer) {
+          return {
+            content: [{ type: "text", text: `peer "${params.id}" 不存在或已关闭` }],
+            details: makeDetails("read")([]),
+            isError: true,
+          };
+        }
+        const out = readPeer(peer, params.lines ?? 60);
+        return {
+          content: [{ type: "text", text: out || "(no output)" }],
+          details: makeDetails("read")([]),
+        };
+      }
+
+      // ── action: close — 退役 peer ─────────────────────────────────────
+
+      if (params.action === "close") {
+        if (!params.id) {
+          return {
+            content: [{ type: "text", text: "close 需要 id（peerId）" }],
+            details: makeDetails("close")([]),
+            isError: true,
+          };
+        }
+        const peer = getPeer(params.id);
+        if (!peer) {
+          return {
+            content: [{ type: "text", text: `peer "${params.id}" 不存在` }],
+            details: makeDetails("close")([]),
+            isError: true,
+          };
+        }
+        closePeer(peer);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `peer **${params.id}** 已关闭（agent=${peer.agent}, harness=${peer.harness}, msg#${peer.msgSeq}）`,
+            },
+          ],
+          details: makeDetails("close")([]),
         };
       }
 
@@ -400,6 +675,32 @@ export default function (pi: ExtensionAPI) {
         }
 
         try {
+          // PR-12: wait:false → 预生成 parentRunId 作异步句柄，后台执行
+          if (params.wait === false) {
+            const batchId = generateRunId();
+            pendingOps.set(batchId, {
+              mode: "chain",
+              p: pendingCatch(runChain(
+                chainEntries,
+                config,
+                effectiveCwd,
+                params.task,
+                params.model,
+                signal,
+                params.harness,
+                batchId,
+              )),
+            });
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `chain 已后台派发（${params.chain.length} 步），句柄 **${batchId}**。\n收结果：action:wait id=${batchId} · 看 peers：action:peers`,
+                },
+              ],
+              details: makeDetails("chain")([]),
+            };
+          }
           const results = await runChain(
             chainEntries,
             config,
@@ -407,6 +708,7 @@ export default function (pi: ExtensionAPI) {
             params.task,
             params.model,
             signal,
+            params.harness,
           );
           appendSessionLog("chain", results);
           return {
@@ -476,12 +778,38 @@ export default function (pi: ExtensionAPI) {
         }
 
         try {
+          // PR-12: wait:false → 预生成 parentRunId 作异步句柄，后台执行
+          if (params.wait === false) {
+            const batchId = generateRunId();
+            pendingOps.set(batchId, {
+              mode: "parallel",
+              p: pendingCatch(runParallelBatches(
+                taskEntries,
+                config,
+                effectiveCwd,
+                params.model,
+                signal,
+                params.harness,
+                batchId,
+              )),
+            });
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `parallel 已后台派发（${params.tasks.length} 个 peer），句柄 **${batchId}**。\n收结果：action:wait id=${batchId} · 看 peers：action:peers`,
+                },
+              ],
+              details: makeDetails("parallel")([]),
+            };
+          }
           const results = await runParallelBatches(
             taskEntries,
             config,
             effectiveCwd,
             params.model,
             signal,
+            params.harness,
           );
           appendSessionLog("parallel", results);
           return {
@@ -535,31 +863,119 @@ export default function (pi: ExtensionAPI) {
 
         try {
           const startedAt = Date.now();
-          const result = await executeWithFallback(
-            agent,
-            params.task,
-            config,
-            params.cwd ?? process.cwd(),
-            params.model,
-            signal,
-            undefined,
-            50,
-            params.images,
-          );
 
-          if (result.status === "completed") {
-            ensureWorkfile(result, effectiveCwd, startedAt);
+          // PR-12: params.peer 显式复用已有 peer（agent 自主决定复用还是新开）
+          let peer: PeerInfo | null = null;
+          if (params.peer) {
+            peer = getPeer(params.peer);
+            if (!peer) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `peer "${params.peer}" 不存在或已关闭（peers: ${listPeers()
+                      .map((p) => p.peerId)
+                      .join(", ") || "none"}）`,
+                  },
+                ],
+                details: makeDetails("single")([]),
+                isError: true,
+              };
+            }
           }
-          appendSessionLog("single", [result]);
+
+          // ── 阻塞路径：wait:true → 路由链 fallback 重试 ──
+          if (params.wait === true && !peer) {
+            const result = await executeWithFallback(
+              agent,
+              params.task,
+              config,
+              params.cwd ?? process.cwd(),
+              params.model,
+              signal,
+              undefined,
+              50,
+              params.images,
+              params.isSystemSpawned,
+              undefined,
+              params.harness,
+            );
+            if (result.status === "completed") {
+              ensureWorkfile(result, effectiveCwd, startedAt);
+            }
+            appendSessionLog("single", [result]);
+            return {
+              content: [{ type: "text", text: result.output }],
+              details: makeDetails("single")([result]),
+              isError: result.status === "failed" || undefined,
+            };
+          }
+
+          // ── 异步路径（默认）：开 peer / 复用 peer → send → 返回句柄 ──
+          if (!peer) {
+            const routes = resolveRouteChain(
+              agent,
+              config,
+              params.harness || params.model
+                ? { harness: params.harness, model: params.model }
+                : undefined,
+            );
+            const route = routes.find((r) => {
+              const a = getAdapter(r.harness);
+              return a !== null && a.interactive;
+            });
+            if (!route) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `没有可用 harness（路由: ${routes
+                      .map((r) => r.harness)
+                      .join(" → ") || "none"}）。请检查 PATH 或调整 tier routes`,
+                  },
+                ],
+                details: makeDetails("single")([]),
+                isError: true,
+              };
+            }
+            peer = await openPeer({
+              agent,
+              route,
+              adapter: getAdapter(route.harness)!,
+              config,
+              cwd: params.cwd ?? process.cwd(),
+              isSystemSpawned: params.isSystemSpawned,
+            });
+          }
+          const sent = sendToPeer(peer, params.task, {
+            images: params.images,
+          });
+          // wait:true + 复用 peer：就地收结果
+          if (params.wait === true) {
+            const result = await waitForPeerMessage(peer, sent.seq, config, signal);
+            if (result.status === "completed") {
+              ensureWorkfile(result, effectiveCwd, startedAt);
+            }
+            appendSessionLog("single", [result]);
+            return {
+              content: [{ type: "text", text: result.output }],
+              details: makeDetails("single")([result]),
+              isError: result.status === "failed" || undefined,
+            };
+          }
           return {
             content: [
               {
                 type: "text",
-                text: result.output,
+                text:
+                  `已派发到 peer **${peer.peerId}**` +
+                  `（${peer.agent}@${peer.harness}，pane ${peer.paneId}）msg #${sent.seq}\n` +
+                  `收结果：action:wait id=${peer.peerId} · ` +
+                  `看进度：action:read id=${peer.peerId} · ` +
+                  `追加指令：action:send id=${peer.peerId}`,
               },
             ],
-            details: makeDetails("single")([result]),
-            isError: result.status === "failed" || undefined,
+            details: makeDetails("single")([]),
           };
         } catch (err) {
           return {
@@ -630,64 +1046,42 @@ export default function (pi: ExtensionAPI) {
 
         try {
           const startedAt = Date.now();
-          // 解析 model 链：显式覆盖 > tier > defaultTier > inherit
-          const modelChain = resolveModelChain(agent, config);
-          const initialModel = modelChain[0];
-          const modelLabel = initialModel
-            ? `(model: ${initialModel})`
-            : `(model: inherit)`;
-          // 先用首选模型启动，通知用户
-          const launch = launchSingle(
+          // PR-12: 路由链解析（harness/model 混合），executeWithFallback
+          // 内部完成 peer 派发 + fallback 重试 + 等待
+          const routes = resolveRouteChain(agent, config);
+          const routeLabel = routes
+            .map((r) => `${r.harness}${r.model ? `/${r.model}` : ""}`)
+            .join(" → ");
+          ctx.ui.notify(
+            `⏳ ${agent.name} 派发中… route: ${routeLabel}`,
+            "info",
+          );
+          const result = await executeWithFallback(
             agent,
             task,
             config,
             ctx.cwd,
-            initialModel,
+            undefined, // explicitModel
+            undefined, // signal
+            undefined, // topRowTargetPaneId
+            50,
           );
-          ctx.ui.notify(
-            `⏳ ${agent.name} 已启动 (run: ${launch.runId})... ${modelLabel}`,
-            "info",
-          );
-          let result = await waitForCompletion(launch, config);
-
-          // Fallback：如果失败且 tier 配置了 fallback，自动重试
-          if (
-            result.status === "failed" &&
-            modelChain.length > 1 &&
-            result.error !== "Aborted" &&
-            result.error !== "timeout"
-          ) {
-            for (const fallbackModel of modelChain.slice(1, 3)) {
-              ctx.ui.notify(
-                `🔄 ${agent.name} 首选模型失败，尝试 fallback: ${fallbackModel}`,
-                "warn",
-              );
-              const fallbackLaunch = launchSingle(
-                agent,
-                task,
-                config,
-                ctx.cwd,
-                fallbackModel,
-              );
-              result = await waitForCompletion(fallbackLaunch, config);
-              if (result.status === "completed") break;
-              if (result.error === "Aborted" || result.error === "timeout")
-                break;
-            }
-          }
 
           if (result.status === "completed") {
             ensureWorkfile(result, ctx.cwd, startedAt);
             const workfileNote = result.workfilePath
               ? `\n📄 ${result.workfilePath}`
               : "";
+            const peerNote = result.peerId
+              ? `\n🔗 peer ${result.peerId} 存活中，可用 action:send 追问`
+              : "";
             ctx.ui.notify(
-              `✅ ${agent.name} 完成 (${(result.durationMs / 1000).toFixed(1)}s)${workfileNote}\n\n${result.output.slice(0, 4000)}${result.output.length > 4000 ? "\n...（截断）" : ""}`,
+              `✅ ${agent.name} 完成 (${(result.durationMs / 1000).toFixed(1)}s)${workfileNote}${peerNote}\n\n${result.output.slice(0, 4000)}${result.output.length > 4000 ? "\n...（截断）" : ""}`,
               "info",
             );
           } else {
             ctx.ui.notify(
-              `❌ ${agent.name} 失败 (run: ${launch.runId}): ${result.error ?? "未知错误"}`,
+              `❌ ${agent.name} 失败 (run: ${result.runId}): ${result.error ?? "未知错误"}${result.peerId ? `\npeer ${result.peerId} 可能仍存活：action:send/read 检查` : ""}`,
               "error",
             );
           }

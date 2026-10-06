@@ -68,6 +68,12 @@ export interface RegisterRunInput {
   isSystemSpawned?: boolean;
   /** PR-10: 父 run id（chain/resume 关联查询用）。 */
   parentRunId?: string;
+  /** PR-12: 该 run 隶属的 peer id（peer 模式下每条消息 = 一行 run） */
+  peerId?: string;
+  /** PR-12: 该消息在 peer 内的序号（brief-N/result-N 对齐） */
+  msgSeq?: number;
+  /** PR-12: 承载该 run 的 harness id（pi/claude/codex/…） */
+  harness?: string;
 }
 
 /** `updateRunStatus` 的输入参数。终态必须传 status，其余可选。 */
@@ -116,6 +122,12 @@ export interface RegisteredRun {
   parentRunId: string | null;
   /** PR-10: checkpoint 文件路径（本阶段可选；未来 resume 用）。 */
   checkpointPath: string | null;
+  /** PR-12: 该 run 隶属的 peer id（peer 模式下每条消息 = 一行 run）。 */
+  peerId: string | null;
+  /** PR-12: 消息在 peer 内的序号。 */
+  msgSeq: number | null;
+  /** PR-12: 承载该 run 的 harness id。 */
+  harness: string | null;
 }
 
 interface RegisteredRow {
@@ -139,6 +151,9 @@ interface RegisteredRow {
   is_system_spawned: number;
   parent_run_id: string | null;
   checkpoint_path: string | null;
+  peer_id: string | null;
+  msg_seq: number | null;
+  harness: string | null;
 }
 
 /** rebuildFromStatusFiles 的统计报告 */
@@ -224,7 +239,7 @@ export function closeRegistry(): void {
  *                  reentry_count / is_system_spawned / parent_run_id / checkpoint_path）
  *        + 索引（idx_status / idx_started / idx_agent / idx_is_system / idx_parent）
  */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 /**
  * 初始化 schema。`IF NOT EXISTS` 保证幂等。
@@ -321,6 +336,57 @@ function migrate(db: DatabaseSync): void {
     `);
   }
 
+  // v2 → v3: PR-12 peer 化。runs 加 peer 归属列；新建 peers 生命周期表。
+  if (current < 3) {
+    const cols = new Set(
+      (
+        db.prepare("PRAGMA table_info(atelier_runs)").all() as Array<{
+          name: string;
+        }>
+      ).map((c) => c.name),
+    );
+    const addCol = (name: string, decl: string) => {
+      if (cols.has(name)) return;
+      try {
+        db.exec(`ALTER TABLE atelier_runs ADD COLUMN ${name} ${decl}`);
+      } catch (e) {
+        console.error(
+          `[atelier:registry] migration v2→v3 ADD COLUMN ${name} 失败:`,
+          e,
+        );
+      }
+    };
+    addCol("peer_id", "TEXT");
+    addCol("msg_seq", "INTEGER");
+    addCol("harness", "TEXT");
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS atelier_peers (
+        peer_id            TEXT PRIMARY KEY,
+        pane_id            TEXT NOT NULL,
+        mux                TEXT NOT NULL,
+        harness            TEXT NOT NULL,
+        agent              TEXT NOT NULL,
+        model              TEXT,
+        cwd                TEXT NOT NULL DEFAULT '',
+        peer_dir           TEXT NOT NULL,
+        msg_seq            INTEGER NOT NULL DEFAULT 0,
+        alive              INTEGER NOT NULL DEFAULT 1,
+        created_at         INTEGER NOT NULL,
+        closed_at          INTEGER,
+        native_session_id  TEXT,
+        last_status        TEXT,
+        is_system_spawned  INTEGER NOT NULL DEFAULT 0,
+        parent_run_id      TEXT
+      );
+    `);
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_peers_alive ON atelier_peers(alive);
+      CREATE INDEX IF NOT EXISTS idx_peers_agent ON atelier_peers(agent);
+      CREATE INDEX IF NOT EXISTS idx_runs_peer ON atelier_runs(peer_id);
+    `);
+  }
+
   // 更新 user_version(原子)
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   console.log(
@@ -374,6 +440,10 @@ export function rebuildFromStatusFiles(): RebuildReport {
     report.scanned++;
     const runDir = path.join(subagentsDir, entry);
     const runId = entry;
+
+    // PR-12: peer 目录（有 peer.json）不是 run——其消息已按 <peerId>-m<seq>
+    // 注册为独立 run 行；扫到会生成幻影 runId=peerId 行，跳过
+    if (fs.existsSync(path.join(runDir, "peer.json"))) continue;
 
     const statusPath = path.join(runDir, "status.json");
     if (!fs.existsSync(statusPath)) {
@@ -441,8 +511,8 @@ export function registerRun(input: RegisterRunInput): void {
       INSERT OR REPLACE INTO atelier_runs (
         run_id, agent, mode, status, run_dir, task_excerpt,
         started_at, finished_at, last_turn_at, tmux_pane,
-        is_system_spawned, parent_run_id
-      ) VALUES (?, ?, ?, 'running', ?, ?, ?, NULL, ?, ?, ?, ?)
+        is_system_spawned, parent_run_id, peer_id, msg_seq, harness
+      ) VALUES (?, ?, ?, 'running', ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
       `,
     ).run(
       input.runId,
@@ -455,6 +525,9 @@ export function registerRun(input: RegisterRunInput): void {
       input.tmuxPane ?? null,
       input.isSystemSpawned ? 1 : 0,
       input.parentRunId ?? null,
+      input.peerId ?? null,
+      input.msgSeq ?? null,
+      input.harness ?? null,
     );
   } catch (err) {
     console.warn(
@@ -587,6 +660,10 @@ function rowToRun(row: RegisteredRow): RegisteredRun {
     parentRunId: row.parent_run_id,
     // 长程任务 checkpoint 文件路径
     checkpointPath: row.checkpoint_path,
+    // PR-12: peer 归属 + harness
+    peerId: row.peer_id ?? null,
+    msgSeq: row.msg_seq ?? null,
+    harness: row.harness ?? null,
   };
 }
 
@@ -618,6 +695,142 @@ export function listUnsettled(): RegisteredRun[] {
       ORDER BY started_at ASC
     `);
     return (stmt.all() as RegisteredRow[]).map(rowToRun);
+  } catch {
+    return [];
+  }
+}
+
+// ─── PR-12: peer 表 ──────────────────────────────────────────────────────────
+//
+// atelier_peers 是 peer 生命周期的查询视图；peerDir/peer.json 才是唯一真相
+// （与 runs/status.json 的关系一致：SQLite 可丢，重建靠文件）。
+
+/**
+ * 注册新 peer（openPeer 成功分屏后调用）。失败仅 warn。
+ */
+export function registerPeer(
+  peer: {
+    peerId: string;
+    paneId: string;
+    mux: string;
+    harness: string;
+    agent: string;
+    model?: string;
+    cwd: string;
+    peerDir: string;
+    createdAt: number;
+  },
+  opts: { isSystemSpawned?: boolean; parentRunId?: string } = {},
+): void {
+  try {
+    const db = getRegistry();
+    db.prepare(
+      `
+      INSERT OR REPLACE INTO atelier_peers (
+        peer_id, pane_id, mux, harness, agent, model, cwd, peer_dir,
+        msg_seq, alive, created_at, native_session_id, last_status,
+        is_system_spawned, parent_run_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, NULL, 'spawned', ?, ?)
+      `,
+    ).run(
+      peer.peerId,
+      peer.paneId,
+      peer.mux,
+      peer.harness,
+      peer.agent,
+      peer.model ?? null,
+      peer.cwd,
+      peer.peerDir,
+      peer.createdAt,
+      opts.isSystemSpawned ? 1 : 0,
+      opts.parentRunId ?? null,
+    );
+  } catch (err) {
+    console.warn(
+      `[atelier:registry] registerPeer failed for ${peer.peerId}:`,
+      err,
+    );
+  }
+}
+
+/** 更新 peer 的可变字段（msg_seq / last_status / native_session_id） */
+export function updatePeerMeta(
+  peerId: string,
+  patch: {
+    msgSeq?: number;
+    lastStatus?: string;
+    nativeSessionId?: string;
+  },
+): void {
+  try {
+    const db = getRegistry();
+    db.prepare(
+      `
+      UPDATE atelier_peers
+      SET msg_seq = COALESCE(?, msg_seq),
+          last_status = COALESCE(?, last_status),
+          native_session_id = COALESCE(?, native_session_id)
+      WHERE peer_id = ?
+      `,
+    ).run(
+      patch.msgSeq ?? null,
+      patch.lastStatus ?? null,
+      patch.nativeSessionId ?? null,
+      peerId,
+    );
+  } catch (err) {
+    console.warn(
+      `[atelier:registry] updatePeerMeta failed for ${peerId}:`,
+      err,
+    );
+  }
+}
+
+/** 标记 peer 退役（closePeer 调用）：alive=0 + closed_at */
+export function markPeerClosed(peerId: string): void {
+  try {
+    const db = getRegistry();
+    db.prepare(
+      `UPDATE atelier_peers SET alive = 0, closed_at = ?, last_status = 'closed'
+       WHERE peer_id = ?`,
+    ).run(Date.now(), peerId);
+  } catch (err) {
+    console.warn(
+      `[atelier:registry] markPeerClosed failed for ${peerId}:`,
+      err,
+    );
+  }
+}
+
+/** registry 视角的存活 peer 列表（listPeers 的辅证；文件仍是真相） */
+export function listAlivePeers(): Array<{
+  peerId: string;
+  paneId: string;
+  harness: string;
+  agent: string;
+  msgSeq: number;
+}> {
+  try {
+    const db = getRegistry();
+    const rows = db
+      .prepare(
+        `SELECT peer_id, pane_id, harness, agent, msg_seq
+         FROM atelier_peers WHERE alive = 1 ORDER BY created_at ASC`,
+      )
+      .all() as Array<{
+      peer_id: string;
+      pane_id: string;
+      harness: string;
+      agent: string;
+      msg_seq: number;
+    }>;
+    return rows.map((r) => ({
+      peerId: r.peer_id,
+      paneId: r.pane_id,
+      harness: r.harness,
+      agent: r.agent,
+      msgSeq: r.msg_seq,
+    }));
   } catch {
     return [];
   }
