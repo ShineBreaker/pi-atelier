@@ -1,8 +1,8 @@
 {
   "name": "pi-atelier",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "Subagent 可视化执行平台（tmux 分屏 + SQLite registry + lifecycle 恢复）",
+  "description": "harness 无关的 subagent peer 编排平台（持久会话 + 多 harness 路由 + 可视化分屏）",
   "license": "MIT",
   "keywords": ["pi-package"],
   "pi": {
