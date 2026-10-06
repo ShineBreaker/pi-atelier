@@ -1,6 +1,86 @@
 # Atelier — Subagent 可视化执行平台
 
-## 0 五层速览
+> **PR-12 架构说明**：atelier 已从「spawn 一次性批处理子进程」演进为
+> 「向持久 peer 委派任务」的编排层。以下第 0 节起为新版架构；后文
+> （第 1 节起的五层模型）为早期设计参考文档，部分组件名已演化。
+
+## 0 Peer 编排架构（当前形态）
+
+### 核心模型
+
+```
+v1: subagent = 函数调用   spawn(task) → 跑 → 死 → result
+v2: subagent = 持久 peer  open(harness) → [msg₁→result₁] → [msg₂→result₂] → … → close
+```
+
+peer = **分屏 pane + 活的 harness TUI 会话 + 角色 + 累积上下文**。
+task 只是发给 peer 的第 N 条消息；peer 跑完不退出，主会话随时
+`action:"send"` 追加指令（追问/纠偏/解堵）。
+
+### Harness 无关路由
+
+派发目标不再只是 pi——tier 配置升级为 harness/model 混合路由链：
+
+```json
+"tiers": {
+  "pro":   ["claude/sonnet", "codex", "pi/zai/GLM-5.2"],
+  "quick": ["hermes", "pi/qwen-3.8max"]
+}
+```
+
+每个条目首段是已知 harness 或 PATH binary → 拆成 harness/model；
+否则整体视为 pi 模型名（旧 `{model, fallback}` 配置完全兼容）。
+解析顺序：`params.harness/model` > agent frontmatter `harness:` pin
+> tier routes 按序（跳过不可用/时段禁用）> 兜底 pi。
+
+内置 adapter：pi / claude / codex / hermes / opencode / omp +
+generic 工厂（任意 PATH binary 自动接入，如 mcode/zcode）。
+
+### 文件契约（结果回收主通道）
+
+peer 目录 `~/.cache/pi/subagents/<peerId>/`：
+
+| 文件           | 写者    | 内容                                          |
+| -------------- | ------- | --------------------------------------------- |
+| `peer.json`    | atelier | peer 生命周期元数据（唯一权威）               |
+| `brief-N.md`   | atelier | 第 N 条消息完整指令（persona 只在 N=1 注入）  |
+| `result-N.md`  | peer    | 结果 + Return Header（`**Status**: …`）       |
+| `status.json`  | 共享    | atelier 派单写 running；peer 覆写终态+msgSeq  |
+
+peer 没写文件 → monitor 降级链：herdr `agent_status`（idle/working/
+blocked/done 语义检测）→ transcript 稳定性启发 → `readPane` 兜底提取。
+
+### 工具面
+
+```text
+subagent({agent, task})                → 异步派发，返回 peerId 句柄
+subagent({agent, task, wait:true})     → 阻塞到本条消息完成
+subagent({tasks:[...]})                → 并行（wait:false 返回批句柄）
+subagent({chain:[...]})                → 串行链（同 agent+harness 复用 peer）
+subagent({action:"send",  id, task})   → 随时向 peer 发新指令
+subagent({action:"wait",  id})         → 收结果（peerId 或批句柄）
+subagent({action:"read",  id, lines})  → 看 peer 实时 transcript
+subagent({action:"peers"})             → 存活 peer 池
+subagent({action:"close", id})         → 退役 peer
+subagent({action:"list"})              → agent 路由表 + harness 可用性
+```
+
+send 语义分化：peer 空闲→新任务（msgSeq 递增）；peer 忙→舵手消息
+（注入 TUI 输入框，纠偏当前执行）；esc-required 类 harness 自动先 Esc。
+
+### 关键配置（atelier.json）
+
+| 字段                | 说明                                              |
+| ------------------- | ------------------------------------------------- |
+| `tiers`             | tier→路由链（string / string[] / {model,fallback,routes}） |
+| `modelSchedules`    | 时段限制；键支持 `harness/model` / `model` / `harness` 三种 |
+| `peerApproval`      | `"full"` 自治 / `"safe"` 保守 / `"off"` 默认权限 |
+| `blockedGraceMs`    | 权限门卡住宽容期（超时提示 send 解堵）            |
+| `peerReadyTimeoutMs`| harness TUI 就绪等待上限                          |
+| `maxPeers`          | peer 池上限（0=不限）                             |
+| `harnessArgs`       | `{harness: [extra flags]}` 追加启动参数           |
+
+## 0.1 五层速览（早期设计参考）
 
 | 层       | 组件                                 | 职责                                 |
 | -------- | ------------------------------------ | ------------------------------------ |
