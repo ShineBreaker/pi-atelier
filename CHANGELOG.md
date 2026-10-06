@@ -5,6 +5,117 @@ atelier 所有值得注意的变更都会记录在此文件。
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.0] - 2026-10-07
+
+### Added
+
+- **持久 peer 编排（harness 无关）**：subagent 派发模型从「spawn 一次性
+  批处理进程」重构为「向持久 peer 委派任务」。一个 peer = 分屏 pane +
+  活的 harness TUI 会话 + 角色 + 累积上下文，跑完不退出；主会话随时
+  `action:"send"` 追加指令——空闲时是带文件契约的新任务（追问），
+  忙碌时是注入 TUI 输入框的舵手消息（纠偏/解堵）。等待超时/blocked
+  不杀 pane，peer 是持久资产，可被后续 send 救活。
+- **多 harness 路由**：新增 `runtime/harness/` 适配层。内置
+  pi/claude/codex/hermes/opencode/omp 六个 adapter + `genericAdapter`
+  工厂（任意 PATH binary 零定制接入，如 mcode/zcode）。tier 配置升级
+  为混合路由链——`["claude/sonnet", "codex", "pi/zai/GLM-5.2"]` 按序
+  即优先级，外部 harness 优先、pi 兜底；旧 `{model, fallback}` 配置
+  完全兼容。解析链：`params.harness/model` > agent frontmatter
+  `harness:` pin > tier routes（跳过 binary 缺失与时段禁用）。
+- **工具面扩展**：`subagent` 新增 `send`/`wait`/`read`/`peers`/`close`
+  actions；单发默认异步返回 peerId 句柄（`wait:true` 阻塞）；`peer`
+  参数显式复用、`harness` 参数显式覆盖、`lines` 控制 transcript 尾部；
+  `send` 传 agent 角色名自动路由到该角色空闲 peer。
+- **补写补救**：monitor 判定 peer 停止但 `result-N.md` 未落盘时，先向
+  peer 注入一句补写指令（90s 处理窗口），补救无效才 transcript 兜底
+  提取代写——空闲 peer 上下文还在，一句话即可自救，比抓屏噪声更干净。
+- **session 归属孤儿认领**：peer.json 记录派发方 pi session id，孤儿
+  收尾延迟到会话首次就绪后按归属执行一次；判定依据 pane/harness 存活
+  探测 + `agentSession` 原生 session 复用比对（非时间启发）。pane 活
+  且 agent 已停的代写终态，pane 死/id 复用的标 orphan。
+- **pane 标题可互对**：`sub:角色@harness#<peerId尾4位>`，界面 pane 与
+  主会话持有的 peerId 句柄直接对上。
+- **peer 相关配置**：`peerApproval`（full/safe/off 权限模式映射）、
+  `blockedGraceMs`、`peerReadyTimeoutMs`、`maxPeers`、`harnessArgs`
+  （per-harness 追加启动参数）。`modelSchedules` 键升级为
+  `harness/model` > `model` > `harness` 三级。
+
+### Changed
+
+- **chain 上下文零损耗**：同 agent+同 harness 的步骤自动复用同一 peer
+  （peer 记得全部上下文，`{previous}` 降级为冗余保险）；跨 harness
+  步骤仍走输出接力。
+- **parallel 布局**：每任务一个 peer，首个开新行、后续行内右分；
+  完成后 pane 保留构成可用 peer 池。
+- **完成检测四级降级**：status.json 文件契约（msgSeq 对齐）> herdr
+  `agent_status` 语义检测 > transcript 稳定性启发 > 补写补救 >
+  transcript 兜底提取。
+- **舵手消息纯注入**：忙碌 peer 追加消息只进 TUI 输入框，一律不主动
+  打断（harness 自行排队消化；单次 Esc 实测未必有效，半吊子打断更糟，
+  打断将作显式原语按需引入）。
+
+### Removed
+
+- **batch 遗留层整删**：`scripts/subagent-wrapper.sh`、
+  `extract-pi-result.py`、`launchSingle`/`launchParallel`、
+  `waitForCompletion`、`resolveModelChain`、`LaunchResult`、多路复用器
+  batch 方法集（`splitAbove`/`splitRight`/`refocus`/`currentPaneId`）。
+  外部 harness 无等价 batch 协议，peer 模式已覆盖原场景；
+  `cleanupOldRuns` 接回 `openPeer`。
+- **stuck-detector 删除**：peer 长任务下「5 分钟无更新」必然误报且无
+  自动动作；超时/blocked 宽容期/pane 死亡三层机制已覆盖。`RunStatus`
+  保留 `stuck` 值仅供旧数据兼容。
+
+### Fixed
+
+- **session id 提取**：`getEntries()` 不含 session header，改用
+  `getSessionId()`——孤儿认领与 `peer.sessionId` 此前实际不生效。
+- `settleRun` 必填参数跟在可选参数后（TS1016）；`run.msgSeq <
+  peer.msgSeq` 的过期消息行在 registry 侧收尾为 orphan。
+- `collectPeerResult` 在无 mux 环境兜底提取时 `detectBackend` 抛错。
+- `listRunning` 跳过 peer 目录，不再产生 `runId=peerId` 幻影运行。
+
+### 关联提交
+
+| 范围                                                            | Commit    | 说明                                             |
+| --------------------------------------------------------------- | --------- | ------------------------------------------------ |
+| `runtime/harness/` `runtime/peer.ts` + 18 文件                  | `354c774` | FEATURE: 持久 peer 编排层——harness 无关派发      |
+| `AGENTS.md` `README.md`                                          | `6ea1934` | DOCS: peer 编排架构文档                          |
+| `scripts/` `runtime/` 等 13 文件                                 | `ece68ea` | REFACTOR: 移除 batch 遗留层                      |
+| `runtime/peer.ts`                                                | `ab39e83` | FEATURE: pane 标题追加 peerId 尾段               |
+| `runtime/monitor.ts`                                             | `965a6ed` | FEATURE: 补写指令先行，transcript 兜底           |
+| `runtime/harness/` `runtime/peer.ts`                             | `3dab606` | REFACTOR: 舵手消息纯注入，删自动 Esc             |
+| `core/session.ts` `registry/` `index.ts`                         | `a360ee3` | FEATURE: 孤儿认领按 session 归属，删 stuck-detector |
+| `AGENTS.md` `README.md` `runtime/`                              | `2fa78d3` | DOCS: 同步实际架构                               |
+| `index.ts`                                                       | `bbb0cce` | FIX: session id 提取改用 getSessionId()          |
+| `registry/orphan-recovery.ts`                                    | `46ace13` | FIX: settleRun 签名 + 过期消息行收尾             |
+| `runtime/monitor.ts`                                             | `53a13e9` | FIX: collectPeerResult 无 mux 抛错               |
+| `runtime/monitor.ts`                                             | `1fa1600` | FIX: listRunning 跳过 peer 目录幻影              |
+
+---
+
+## 技术细节 / Migration Notes
+
+### 1. Registry schema v3
+
+`PRAGMA user_version` 自动迁移：新增 `atelier_peers` 表，`atelier_runs`
+加 `peer_id`/`msg_seq`/`harness` 列。旧库启动自动 ALTER，无需手工操作。
+
+### 2. 配置兼容
+
+- 旧 `tiers: {name: {model, fallback[]}}` 完全兼容，归一化为 routes。
+- `modelSchedules` 键仍支持裸模型名；新写法 `harness/model` 优先级更高。
+- 新增字段全部有默认值，`atelier.json` 不改也能跑（默认 pi 派发）。
+
+### 3. 行为差异
+
+- **无 mux 环境无法派发**：peer 需要 splitShell，无 tmux/herdr 时
+  `openPeer` 抛错（原 batch 路径同样依赖 mux，行为一致）。
+- **peer 目录豁免清理**：`peer.json alive:true` 的目录永不被
+  `keepResults` 清理。
+- **peer.json 缺 sessionId 的旧 peer**：孤儿认领视为本会话记录，
+  按探针正常判定。
+
 ## [0.3.0] - 2026-09-12
 
 ### Added
