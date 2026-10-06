@@ -337,9 +337,11 @@ export async function openPeer(opts: OpenPeerOpts): Promise<PeerInfo> {
     parentRunId: opts.parentRunId,
   });
 
+  // pane 标题 = 角色@harness + peerId 尾段：人类可读（谁在干活），
+  // 尾段又能与主会话拿到的 peerId 句柄对上（同名 peer 可区分）
   backend.setTitle(
     paneId,
-    `${config.panePrefix}${agent.name}@${adapter.id}`,
+    `${config.panePrefix}${agent.name}@${adapter.id}#${peerId.slice(-4)}`,
   );
 
   // 启动 harness TUI
