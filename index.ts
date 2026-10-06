@@ -1027,7 +1027,7 @@ export default function (pi: ExtensionAPI) {
         // 实现：handler 写一个隐藏标记（CustomEntry，不进 LLM 上下文），
         // before_agent_start hook 读到后把 agent prompt 追加到 systemPrompt。
         //
-        // 非空上下文（已有对话历史）：维持原有行为，launchSingle 启动独立 subagent。
+        // 非空上下文（已有对话历史）：executeWithFallback 派发独立 peer subagent。
         try {
           const entries = ctx.sessionManager.getEntries();
           const hasUserMessage = entries.some(
@@ -1041,7 +1041,7 @@ export default function (pi: ExtensionAPI) {
             return;
           }
         } catch {
-          // sessionManager 读取失败（不该发生）→ 降级走原 launchSingle 路径
+          // sessionManager 读取失败（不该发生）→ 跳过注入，直接走 peer 派发
         }
 
         try {

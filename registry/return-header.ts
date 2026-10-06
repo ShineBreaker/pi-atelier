@@ -29,8 +29,8 @@
  *   - 没 header → parseReturnHeader 返回 null(调用方决定如何处理)
  *   - header 格式乱 → 返回 status="unknown" + 警告标记
  *
- * 不动 wrapper.sh / extract-pi-result.py:本模块是 atelier 侧纯 JS 实现,
- * 解析的是 result.md 全文(pane 子进程写入的最终 assistant 文本)。
+ * 本模块是 atelier 侧纯 JS 实现，解析的是 result-N.md 全文（peer harness
+ * 写入的最终 assistant 文本）。
  */
 
 /** Return Header 的 4 状态枚举(扩展集合) */

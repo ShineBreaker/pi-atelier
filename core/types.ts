@@ -124,15 +124,6 @@ export interface SubagentConfig {
   harnessArgs: Record<string, string[]>;
 }
 
-/** 单次 tmux pane 启动的结果 */
-export interface LaunchResult {
-  runId: string;
-  runDir: string;
-  paneId: string;
-  paneTitle: string;
-  agent: AgentConfig;
-}
-
 /** 单次 agent 运行的最终结果 */
 export interface RunResult {
   runId: string;

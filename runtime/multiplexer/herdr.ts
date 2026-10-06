@@ -15,10 +15,9 @@
  *   - herdr pane ID 是不透明字符串（如 w1:p1），tmux 是 %N。
  *   - herdr pane 是常驻 shell：run 的命令退出后 shell 仍在、pane 不消失
  *     （tmux split-window 的 pane 进程即命令本身，退出即自动关闭）。
- *     因此 run 时在命令尾拼 `; herdr pane close <id>` 自闭合，对齐 tmux
- *     语义；KEEP_PANE exec 出的交互 shell 被用户退出后同样触发。
- *   - herdr 无「焦点切回」概念：split 用 --no-focus，焦点从未离开主 pane，
- *     refocus() 是 no-op。
+ *     需要自闭合的场景在命令尾拼 `; herdr pane close <id>`；peer 模式
+ *     的 splitShell 不带自闭合（pane 常驻正是 peer 的生命周期前提）。
+ *   - herdr 无「焦点切回」概念：split 用 --no-focus，焦点从未离开主 pane。
  *
  * 环境契约：HERDR_ENV=1 时 herdr 向每个 managed pane 注入
  *   HERDR_WORKSPACE_ID / HERDR_TAB_ID / HERDR_PANE_ID。
@@ -65,101 +64,12 @@ function parsePaneId(json: string): string {
   return paneId;
 }
 
-/**
- * split + run 两步合一：按 splitArgs 分割拿到 paneId，再往 pane 发
- * `<cmd>; herdr pane close <id>`（自闭合尾缀，见文件头说明）。
- *
- * herdr 路径在宿主侧解析（HERDR_BIN_PATH，缺失退回 PATH 的 "herdr"）后
- * 内嵌进命令串：pane 内跑的是用户交互 shell（可能是 fish，不认
- * ${VAR:-default} 这类 POSIX 展开），所以不在命令串里做 shell 参数展开。
- */
-function splitRun(splitArgs: string[], cmd: string): string {
-  const paneId = parsePaneId(herdrExec(splitArgs));
-  const herdrBin = process.env.HERDR_BIN_PATH ?? "herdr";
-  herdrExec([
-    "pane",
-    "run",
-    paneId,
-    `${cmd}; '${herdrBin}' pane close ${paneId}`,
-  ]);
-  return paneId;
-}
-
 export class HerdrBackend implements MultiplexerBackend {
   readonly name = "herdr" as const;
-
-  /**
-   * 当前 pane ID。
-   *
-   * herdr 向每个 managed pane 注入 HERDR_PANE_ID env，直接读最快。
-   * env 缺失（不该发生，HERDR_ENV=1 时必注入）→ 兜底用 CLI 查。
-   */
-  currentPaneId(): string {
-    if (process.env.HERDR_PANE_ID) return process.env.HERDR_PANE_ID;
-    // 兜底：CLI 查（--current 指当前调用 pane）
-    const out = herdrExec(["pane", "current", "--current"]);
-    const parsed = JSON.parse(out) as { pane_id?: string };
-    if (!parsed?.pane_id) {
-      throw new Error("无法确定当前 herdr pane id");
-    }
-    return parsed.pane_id;
-  }
-
-  /**
-   * 在当前 pane 下方垂直分割新 pane（herdr 只有 down，无 up），
-   * 在其中运行 cmd，返回新 pane ID。
-   *
-   * ratio 直接传 herdr（float 0-1，与 tmux percentage 不同）。
-   */
-  splitAbove(cmd: string, ratio: number): string {
-    return splitRun(
-      [
-        "pane",
-        "split",
-        "--current",
-        "--direction",
-        "down",
-        "--no-focus",
-        "--ratio",
-        String(ratio),
-      ],
-      cmd,
-    );
-  }
-
-  /**
-   * 在指定 pane 右侧水平分割新 pane，运行 cmd，返回新 pane ID。
-   * 用于 parallel/chain 在顶部行内扩展。
-   */
-  splitRight(targetPaneId: string, cmd: string, ratio: number): string {
-    return splitRun(
-      [
-        "pane",
-        "split",
-        targetPaneId,
-        "--direction",
-        "right",
-        "--no-focus",
-        "--ratio",
-        String(ratio),
-      ],
-      cmd,
-    );
-  }
 
   /** 设置 pane 标签（herdr pane rename）。失败静默。 */
   setTitle(paneId: string, title: string): void {
     herdrExecMaybe(["pane", "rename", paneId, title]);
-  }
-
-  /**
-   * 焦点切回 — herdr no-op。
-   *
-   * split 用 --no-focus，焦点从未离开主 pane，无需切回。
-   * 保留方法以满足接口契约。
-   */
-  refocus(_paneId: string): void {
-    // intentionally no-op
   }
 
   /**

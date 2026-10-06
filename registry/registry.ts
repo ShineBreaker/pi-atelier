@@ -11,8 +11,8 @@
  *  - 运行中由 atelier 端在 launcher/monitor 的关键点增量同步
  *  - 崩溃可丢：删 .db 文件下次启动自动重建
  *
- * 不动 wrapper.sh / extract-pi-result.py —— 它们只写 status.json，
- * 完全不知 SQLite 存在。本模块是 atelier 侧唯一的 SQLite writer。
+ * peer 进程只写 status.json/result 文件，完全不知 SQLite 存在。
+ * 本模块是 atelier 侧唯一的 SQLite writer。
  *
  * 技术决策：用 pi 运行时（Bun）内置的 `bun:sqlite` 而非 better-sqlite3，
  * 零新依赖。pi 是 Bun 单文件构建（JavaScriptCore），不提供 `node:sqlite`；
@@ -493,7 +493,7 @@ export function rebuildFromStatusFiles(): RebuildReport {
 // ─── 写入 API ────────────────────────────────────────────────────────────────
 
 /**
- * 注册一条新 run（launcher.ts:367/428 prepareRunDir 后调）。
+ * 注册一条新 run（peer.ts sendToPeer 派单时调）。
  *
  * `INSERT OR REPLACE` 而非 `OR IGNORE` —— 同一 runId 在 rebuildFromStatusFiles
  * 已 insert 一行（agent=""），registerRun 二次写入时正确覆盖。
@@ -538,10 +538,10 @@ export function registerRun(input: RegisterRunInput): void {
 }
 
 /**
- * 终态更新（monitor.ts:50/92、launcher.ts:131 writeFailedStatus 后调）。
+ * 终态更新（monitor.ts waitForPeerMessage 终态时调）。
  *
  * 只更新指定字段——其他字段不动。INSERT OR IGNORE 兼容尚未 register 的 run
- * （monitor 终态时 launchSingle 早已 register 过，但 path-safe 写法）。
+ * （sendToPeer 派单时早已 register 过，但 path-safe 写法）。
  */
 export function updateRunStatus(input: UpdateRunStatusInput): void {
   try {

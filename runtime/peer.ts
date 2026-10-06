@@ -31,12 +31,12 @@ import type {
   SubagentConfig,
 } from "../core/types.ts";
 import {
+  cleanupOldRuns,
   getSubagentsDir,
   prepareAgentPrompt,
 } from "./launcher.ts";
 import { detectBackend } from "./multiplexer/detect.ts";
 import type { MultiplexerBackend } from "./multiplexer/types.ts";
-import { getAdapter } from "./harness/resolve.ts";
 import type { HarnessAdapter } from "./harness/types.ts";
 import {
   registerPeer,
@@ -297,6 +297,9 @@ export async function openPeer(opts: OpenPeerOpts): Promise<PeerInfo> {
       `peer 数已达上限 maxPeers=${config.maxPeers}（action:"close" 退役后再派）`,
     );
   }
+
+  // 开新 peer 前清理过期 run 目录（keepResults 上限；存活 peer 目录受保护）
+  cleanupOldRuns(config);
 
   const peerId = `sa-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
   const peerDir = path.join(getSubagentsDir(), peerId);
