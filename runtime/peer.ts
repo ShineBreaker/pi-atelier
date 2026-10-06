@@ -239,15 +239,12 @@ export function buildBrief(
 }
 
 /**
- * 读 agent persona（剥离 frontmatter + subagent-only 标记）。
- * 复用 launcher.prepareAgentPrompt 的产物？它写的是固定名
- * subagent-prompt.md 且含 CAPABILITY_SELF_CHECK+Return Header——peer 模式
- * persona 只取 body 本体（Return Header 由契约段承担）。
+ * 读 agent persona：复用 launcher.prepareAgentPrompt 的产物（含
+ * CAPABILITY_SELF_CHECK + Return Header 指令 + agent body）再读回。
+ * Return Header 指令与契约段各出现一次——重复注入无害（模型更稳地
+ * 遵守），能力自检是设计决策（所有 subagent 无条件获得）。
  */
 function readPersona(agentName: string, runDir: string): string | null {
-  // prepareAgentPrompt 会写 subagent-prompt.md；peer 场景换写到
-  // peerDir/persona.md 只是副产品——直接读它返回的文件内容太绕，
-  // 这里改成调它写盘再读回。
   const promptPath = prepareAgentPrompt(agentName, runDir);
   if (!promptPath) return null;
   try {

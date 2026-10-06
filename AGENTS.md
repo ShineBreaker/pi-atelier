@@ -46,8 +46,7 @@ atelier/
 │   ├── completion-gate.ts
 │   ├── orphan-recovery.ts
 │   ├── registry.ts
-│   ├── return-header.ts
-│   └── stuck-detector.ts
+│   └── return-header.ts
 ├── runtime/
 │   ├── multiplexer/
 │   │   ├── detect.ts
@@ -60,9 +59,6 @@ atelier/
 │   ├── runner.ts
 │   ├── session-log.ts
 │   └── workfile.ts
-├── scripts/
-│   ├── extract-pi-result.py
-│   └── subagent-wrapper.sh
 ├── ui/
 │   └── config-panel.ts
 ├── .gitignore
@@ -83,11 +79,10 @@ atelier/
 | ---------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `core/`                | 配置/类型/发现（无外部循环依赖）       | `types.ts`（接口 + DEFAULT_CONFIG）、`config.ts`（atelier.json 解析）、`discovery.ts`、`schemas.ts`、`context.ts`（subagent-only 切片 + agent 路径解析）、`schedule.ts`（模型时段 DSL）、`system-agents.ts`      |
 | `context/`             | 插件内置 agent / prompt 模板（自包含） | `agents/*.md`（8 个 agent 定义，含 griller）、`prompts/*.md`（7 个链路模板）                                                                                                                                     |
-| `runtime/`             | 执行链路（peer 生命周期 → 监控 → 编排） | `peer.ts`（openPeer/sendToPeer/listPeers/closePeer + 文件契约）、`monitor.ts`（waitForPeerMessage + batch waitForCompletion 遗留）、`runner.ts`（executeWithFallback/runChain/runParallelBatches，路由感知）、`launcher.ts`（run 目录 + prepareAgentPrompt + batch 遗留分屏）、`workfile.ts`、`session-log.ts`、`formatting.ts` |
+| `runtime/`             | 执行链路（peer 生命周期 → 监控 → 编排） | `peer.ts`（openPeer/sendToPeer/listPeers/closePeer + 文件契约）、`monitor.ts`（waitForPeerMessage）、`runner.ts`（executeWithFallback/runChain/runParallelBatches，路由感知）、`launcher.ts`（run 目录 + prepareAgentPrompt + pane 存活原语）、`workfile.ts`、`session-log.ts`、`formatting.ts` |
 | `runtime/harness/`     | harness 适配层（pi/claude/codex/…）    | `types.ts`（HarnessAdapter 接口）、`adapters.ts`（内置 adapter + genericAdapter 工厂）、`resolve.ts`（binary 探测 + 混合路由条目解析 + resolveRouteChain 路由链）                                                                                            |
 | `runtime/multiplexer/` | 多路复用器后端抽象（tmux/herdr）       | `types.ts`（MultiplexerBackend 接口，含 peer 方法集 splitShell/sendText/sendKeys/readPane/agentStatus/agentSession）、`detect.ts`（HERDR_ENV/$TMUX 检测）、`tmux.ts`、`herdr.ts`                                                                                |
-| `scripts/`             | pane 内执行脚本（自包含，随插件分发）  | `subagent-wrapper.sh`（subagent 执行包装）、`extract-pi-result.py`（JSONL→彩色终端流）                                                                                                                           |
-| `registry/`            | 状态索引与治理（SQLite + 恢复层）      | `registry.ts`（SQLite 全局索引）、`orphan-recovery.ts`、`stuck-detector.ts`、`return-header.ts`、`completion-gate.ts`                                                                                            |
+| `registry/`            | 状态索引与治理（SQLite + 恢复层）      | `registry.ts`（SQLite 全局索引）、`orphan-recovery.ts`、`return-header.ts`、`completion-gate.ts`                                                                                                               |
 | `lifecycle/`           | 长程任务生命周期                       | `checkpoint.ts`（跨崩溃 checkpoint）、`workflow.ts`（可视化 workflow）、`resume.ts`（续跳）                                                                                                                      |
 | `ui/`                  | TUI 交互面板（仅 `ctx.mode === "tui"`） | `config-panel.ts`（`/atelier-config` 的 SettingsList 面板，草稿编辑 + saveConfig 写回）                                                                                                                                            |
 
@@ -100,14 +95,13 @@ agent/prompt `.md` 源文件位于插件内置 `context/{agents,prompts}/`（ate
 | `core/discovery.ts`                      | `discoverAgents/discoverPrompts`            | `getAgentDirs()/getPromptDirs()` 多目录扫描 |
 | `runtime/launcher.ts`                    | `prepareAgentPrompt`（subagent 启动）       | `resolveAgentFile(name)` 按优先级查找       |
 | `index.ts` `loadMainSessionAgentContext` | 主会话 worker/planner/reviewer/griller 注入 | `resolveAgentFile(name)`                    |
-| `scripts/subagent-wrapper.sh`            | `parse_agent_md`（pane 内 bash）            | `SCRIPT_DIR/../context/agents` 相对解析     |
 
 **优先级**（同名 agent/prompt 按此顺序去重，先找到的赢）：
 
 1. 插件内置 `context/{agents,prompts}/`（atelier 自带定义）
 2. `getAgentDir()/{agents,prompts}/`（`~/.config/pi/agents/`，用户自定义，兼容旧路径）
 
-TS 端用 `import.meta.url` 定位插件根目录；bash 端硬编码 `$XDG_CONFIG_HOME/pi/extensions/atelier/context/`。
+TS 端用 `import.meta.url` 定位插件根目录。
 
 ## 主会话上下文注入
 
@@ -133,19 +127,18 @@ subagent({agent,task}) / /agentname
                                    → registerRun(<peerId>-m<seq>) → sendText(提交消息)
   → monitor.ts waitForPeerMessage  status.json 终态（msgSeq 对齐）→ herdr agent_status
                                    （working→idle/done）→ transcript 稳定性启发
-                                   → 缺 result-N.md 时 readPane 兜底提取补写
+                                   → 判定停止但缺 result-N.md 时先发补写指令
+                                   （90s 窗口），补救无效再 readPane 兜底提取
   → workfile.ts ensureWorkfile     兜底持久化
 ```
 
 **peer 目录**（`$XDG_CACHE_HOME/pi/subagents/<peerId>/`）：`peer.json`（atelier 写的生命周期权威）、`brief-N.md`、`result-N.md`（peer 写，含 Return Header）、`status.json`（共享终态信号：atelier 派单写 `{running,msgSeq:N}`，peer 覆写 `{completed|failed|blocked,msgSeq:N}`）、`task.md`（兼容旧路径）。每条消息对应 registry 一行 run（runId=`<peerId>-m<seq>`）。
 
-**send 语义**（sendToPeer）：peer 空闲 → 新任务（seq 递增 + 文件契约重置）；peer 忙 → 舵手消息（文本注入 TUI 输入框，不动契约；`adapter.steering==="esc-required"` 时先 sendKeys Escape）。
+**send 语义**（sendToPeer）：peer 空闲 → 新任务（seq 递增 + 文件契约重置）；peer 忙 → 舵手消息（文本注入 TUI 输入框，不动契约；一律不主动打断——harness 自行排队消化）。
 
 **多路复用器**：`detectBackend()`（`HERDR_ENV=1`→herdr，`$TMUX`→tmux）。peer 方法集差异：herdr 有 `agentStatus`/`agentSession` 语义检测（integration 识别），tmux 只有 splitShell/sendText/sendKeys/readPane（完成检测退化到文件契约 + transcript 启发）。新增后端实现 `MultiplexerBackend` 接口 + `detect.ts` 分支。
 
 **runId/peerId 格式**：`sa-{base36ts}-{3bytehex}`（`launcher.ts` generateRunId / `peer.ts` openPeer 同形）。系统子 agent `sys-` 前缀（`core/system-agents.ts`）。
-
-**batch 遗留路径**（`scripts/subagent-wrapper.sh` + `launcher.ts` launchSingle/launchParallel + `monitor.ts` waitForCompletion）：pi `--mode json` 一次性执行链路保留为兼容层，当前主流派发不再走它（外部 harness 没有等价 batch 协议；peer 模式覆盖原场景）。
 
 ## Plan Review Gate（多轮对抗式诘问）
 
@@ -180,7 +173,7 @@ atelier 配置从 `~/.config/pi/atelier.json`（独立文件，推荐）或 `set
 
 - **status.json 是 single source of truth**；SQLite registry（`$XDG_DATA_HOME/pi/atelier-registry.db`）是查询视图，崩溃可丢（删 .db 下次启动 `rebuildFromStatusFiles` 自动重建）。
 - 用 pi 运行时（Bun）内置的 `bun:sqlite`（非 `node:sqlite`——pi 是 Bun 单文件构建，不提供 `node:sqlite` 模块）。零新依赖，非实验性 API。
-- 启动三步（best-effort，不阻塞扩展加载）：`rebuildFromStatusFiles` → `orphanRecovery` → `startStuckDetector`（后台 fiber，`unref` 不阻塞退出）。
+- 启动两步（best-effort，不阻塞扩展加载）：`rebuildFromStatusFiles`（扩展加载时）→ `orphanRecovery`（pi session id 首次提取后一次，按 session 归属收尾；判定依据 pane/harness 存活探测 + agentSession 复用比对，非时间启发）。
 - schema 演进：`SCHEMA_VERSION` + `migrate()`（`PRAGMA user_version` + `ALTER TABLE ADD COLUMN`）。
 
 ## 长程任务恢复（checkpoint / workflow / resume）
@@ -195,11 +188,10 @@ atelier 配置从 `~/.config/pi/atelier.json`（独立文件，推荐）或 `set
 
 ## 修改约束
 
-- **内置脚本** `subagent-wrapper.sh` / `extract-pi-result.py` 在 `scripts/`（随插件自包含分发）。它们在 spawned pane 内作为独立进程运行（tmux/herdr `split`+`run` 调用），只写 status.json/result.md，不知 SQLite 存在——atelier 是唯一的 SQLite writer。
-- **多路复用器后端**：`runtime/multiplexer/` 抽象了 tmux/herdr 差异。`detectBackend()` 按 `HERDR_ENV=1`/`$TMUX` 自动选择。新增后端实现接口 + 在 `detect.ts` 加检测分支。peer 方法集（splitShell/sendText/sendKeys/readPane/agentStatus/agentSession）里后两个仅 herdr 有——接口上标 optional，调用方必须 `?.` 并降级。注意 herdr pane 是常驻 shell（run 的命令退出后 pane 不消失），`herdr.ts` 的 `splitRun` 在 run 命令尾拼 `herdr pane close <id>` 自闭合（batch 遗留路径用）；peer 模式的 splitShell 不带自闭合。
+- **多路复用器后端**：`runtime/multiplexer/` 抽象了 tmux/herdr 差异。`detectBackend()` 按 `HERDR_ENV=1`/`$TMUX` 自动选择。新增后端实现接口 + 在 `detect.ts` 加检测分支。peer 方法集（splitShell/sendText/sendKeys/readPane/agentStatus/agentSession）里后两个仅 herdr 有——接口上标 optional，调用方必须 `?.` 并降级。注意 herdr pane 是常驻 shell（run 的命令退出后 pane 不消失）——这正是 peer 生命周期的前提，splitShell 创建的 pane 不带自闭合。
 - **peer 生命周期权威**：`peerDir/peer.json` 是 peer 元数据的唯一权威（SQLite `atelier_peers` 只是索引）。`alive:true` 的 peer 目录永不被 cleanupOldRuns 清理。等待超时/失败**不杀 pane**——只有显式 abort 或 `action:"close"` 才关。
 - **status.json 共享契约**：atelier 派单写 `{status:"running",msgSeq:N}`；peer 完成覆写 `{completed|failed|blocked,msgSeq:N}`。monitor 只认 `msgSeq>=当前seq` 的终态，防止旧 status 误判新消息。
-- **harness adapter**：`runtime/harness/adapters.ts` 内置 pi/claude/codex/hermes/opencode/omp；`genericAdapter(binary)` 零定制接入任意 PATH binary。launchCommand 返回单条 shell 命令文本（pane run/send-keys 送进 shell）。`steering` 字段声明忙碌时追加消息的实测行为（queue/interrupt/esc-required/unknown），esc-required 由 sendToPeer 自动先 Esc。
+- **harness adapter**：`runtime/harness/adapters.ts` 内置 pi/claude/codex/hermes/opencode/omp；`genericAdapter(binary)` 零定制接入任意 PATH binary。launchCommand 返回单条 shell 命令文本（pane run/send-keys 送进 shell）。
 - **模型时段限制**：`core/schedule.ts` 提供 allow/deny DSL，`harness/resolve.ts` 的 `resolveRouteChain` 按 `modelSchedules` 过滤（键：`harness/model` > `model` > `harness`）。
 - **completion-gate.ts** 的 `isTaskToolAvailable()` 当前恒 false（pi 无 task 工具），`decide()` 是 no-op。架构保留待 pi 接入 task 工具后激活，不要误删。
 - **CAPABILITY_SELF_CHECK**（`runtime/launcher.ts`）硬注入所有 subagent prompt——设计决策，所有 subagent 无条件获得能力自检。

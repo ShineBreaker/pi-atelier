@@ -48,7 +48,8 @@ peer 目录 `~/.cache/pi/subagents/<peerId>/`：
 | `status.json`  | 共享    | atelier 派单写 running；peer 覆写终态+msgSeq  |
 
 peer 没写文件 → monitor 降级链：herdr `agent_status`（idle/working/
-blocked/done 语义检测）→ transcript 稳定性启发 → `readPane` 兜底提取。
+blocked/done 语义检测）→ transcript 稳定性启发；判定停止但仍缺
+result-N.md 时先注入补写指令（90s 窗口），补救无效才 `readPane` 兜底提取。
 
 ### 工具面
 
@@ -66,7 +67,7 @@ subagent({action:"list"})              → agent 路由表 + harness 可用性
 ```
 
 send 语义分化：peer 空闲→新任务（msgSeq 递增）；peer 忙→舵手消息
-（注入 TUI 输入框，纠偏当前执行）；esc-required 类 harness 自动先 Esc。
+（注入 TUI 输入框，纠偏当前执行；一律不主动打断，harness 自行排队）。
 
 ### 关键配置（atelier.json）
 

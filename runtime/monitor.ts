@@ -100,7 +100,7 @@ const REMEDIATE_GRACE_MS = 90_000;
 /**
  * 等待 peer 的第 seq 条消息完成。
  *
- * 与 batch waitForCompletion 的差异：
+ * 设计要点：
  *   - 超时/失败 **不杀 pane**（peer 是持久资产，后续可能仍写出文件或
  *     被 send 救活）；只有显式 abort 才杀 pane。
  *   - herdr blocked 状态走 blockedGraceMs 宽容期，超时返回带「用 send 解堵」
