@@ -17,8 +17,8 @@
  *
  * 发送语义（sendToPeer）：
  *   peer 空闲 → 新任务：msgSeq++、写 brief-N、重置 status.json、发提交消息
- *   peer 忙   → 舵手：只把文本送进 TUI 输入（各 harness 排队/打断行为见
- *              adapter.steering），不动 seq 和文件契约
+ *   peer 忙   → 舵手：只把文本送进 TUI 输入（各 harness 排队行为不同，
+ *              但一律不主动打断——打断需显式操作，将来按需引入）
  */
 
 import * as crypto from "node:crypto";
@@ -424,13 +424,7 @@ export function sendToPeer(
   const busy = peerBusy(peer);
 
   if (busy) {
-    // 舵手：直接注入文本。esc-required 类 harness 先 Esc 打断当前 turn。
-    const adapter = getAdapter(peer.harness);
-    if (adapter?.steering === "esc-required") {
-      interruptPeer(peer);
-      // 给 TUI 一点处理 Esc 的时间（真 sleep，非忙等）
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 300);
-    }
+    // 舵手：直接注入文本，不打断当前 turn（harness 自行排队/消化）。
     backend.sendText(peer.paneId, task);
     peer.lastStatus = "working";
     writePeerJson(peer);
@@ -490,11 +484,6 @@ export function sendToPeer(
   }
 
   return { peerId: peer.peerId, msgId, seq, isNewTask: true };
-}
-
-/** 打断 peer 当前 turn（Esc），用于纠偏前置或解堵 */
-export function interruptPeer(peer: PeerInfo): void {
-  detectBackend().sendKeys?.(peer.paneId, ["Escape"]);
 }
 
 /** 读 peer transcript 尾部（实时查看/结果兜底提取） */

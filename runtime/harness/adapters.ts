@@ -54,14 +54,12 @@ function approvalArgs(
 
 // ─── pi ─────────────────────────────────────────────────────────────────────
 // pi TUI 默认无权限门（工具直接跑），approval 不产生 flag。
-// steering 实测：pi 输入框在生成中键入会暂存排队（queue）。
 
 const pi: HarnessAdapter = {
   id: "pi",
   herdrKind: "pi",
   binaries: ["pi"],
   interactive: true,
-  steering: "queue",
   launchCommand(opts) {
     return cmdline(opts, [
       "pi",
@@ -80,7 +78,6 @@ const claude: HarnessAdapter = {
   herdrKind: "claude",
   binaries: ["claude"],
   interactive: true,
-  steering: "queue",
   launchCommand(opts) {
     const perm = approvalArgs(
       opts.approval,
@@ -105,7 +102,6 @@ const codex: HarnessAdapter = {
   herdrKind: "codex",
   binaries: ["codex"],
   interactive: true,
-  steering: "queue",
   launchCommand(opts) {
     const perm = approvalArgs(
       opts.approval,
@@ -130,7 +126,6 @@ const hermes: HarnessAdapter = {
   herdrKind: "hermes",
   binaries: ["hermes"],
   interactive: true,
-  steering: "unknown",
   launchCommand(opts) {
     return cmdline(opts, [
       "hermes",
@@ -150,8 +145,7 @@ function simpleTui(id: string, herdrKind: string): HarnessAdapter {
     herdrKind,
     binaries: [id],
     interactive: true,
-    steering: "unknown",
-    launchCommand(opts) {
+      launchCommand(opts) {
       return cmdline(opts, [
         id,
         opts.model && `--model ${q(opts.model)}`,
@@ -174,8 +168,7 @@ export function genericAdapter(id: string): HarnessAdapter {
     id,
     binaries: [id],
     interactive: true,
-    steering: "unknown",
-    launchCommand(opts) {
+      launchCommand(opts) {
       return cmdline(opts, [id, ...(opts.extraArgs ?? [])]);
     },
   };
