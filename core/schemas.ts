@@ -82,8 +82,8 @@ export const SubagentParams = Type.Object({
   wait: Type.Optional(
     Type.Boolean({
       description:
-        "true=阻塞到本条消息完成并返回结果；false/缺省=立即返回句柄" +
-        "（用 action:wait 收结果，期间主会话可继续做其他事）",
+        "true=阻塞到本条消息完成并返回结果（仅后续工具强依赖本结果时用）；" +
+        "false/缺省=立即返回句柄，结果完成后自动推送新消息，无需轮询或手动 wait",
     }),
   ),
   lines: Type.Optional(

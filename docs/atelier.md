@@ -51,15 +51,15 @@ tier 配置升级为混合路由链（数组按序即优先级）：
 `subagent` 单一工具承担全部操作：
 
 ```text
-subagent({agent, task})                → 异步派发，返回 {peerId, msgId}
-subagent({agent, task, wait:true})     → 阻塞到本条消息完成
-subagent({tasks:[...]})                → 并行（wait:false 返回批句柄）
-subagent({chain:[...]})                → 串行链（同 agent+harness 复用 peer）
+subagent({agent, task})                → 异步派发，返回 {peerId, msgId}，完成后自动推送
+subagent({agent, task, wait:true})     → 阻塞到本条消息完成（仅后续工具强依赖结果时用）
+subagent({tasks:[...]})                → 并行（默认异步返回批句柄，完成后自动推送）
+subagent({chain:[...]})                → 串行链（默认异步，同 agent+harness 复用 peer）
 subagent({peer:"<peerId>", task})      → 显式复用某 peer
 subagent({harness:"codex", task})      → 显式 harness 覆盖
 
 subagent({action:"send",  id, task})   → 随时向存活 peer 发新指令
-subagent({action:"wait",  id})         → 显式收结果（peerId 或批句柄）
+subagent({action:"wait",  id})         → 手动核查收结果（peerId、批句柄或已推送批次缓存）
 subagent({action:"read",  id, lines})  → 看 peer 实时 transcript 尾部
 subagent({action:"peers"})             → 存活 peer 池一览
 subagent({action:"close", id})         → 退役 peer（关 pane）
@@ -107,7 +107,9 @@ blocked（权限门/输入门）走 `blockedGraceMs` 宽容期，超时返回带
 - **single**：`executeWithFallback` 按路由链逐 harness 尝试（普通失败才换路由；abort/timeout/blocked 不重试）
 - **parallel**：每任务一 peer，首个开新行、后续行内右分；受 `maxConcurrency`/`maxTasks` 约束
 - **chain**：`{previous}`/`{task}` 替换照常；同 agent+同 harness 步骤自动复用 peer（上下文零损耗），跨 harness 走输出接力
-- **异步**：`wait:false` 时 chain/tasks 派发注册到 pendingOps，返回批句柄供 `action:"wait"` 收取
+- **异步默认**：缺省（非 wait:true）时 single/tasks/chain 一律后台执行，立即返回句柄；
+  完成即 `sendUserMessage` 推送到主会话（会话可先 settled，推送到达自动恢复），无需轮询。
+  在途批次挂 pendingOps，推送后进 finishedOps 供事后核查；显式 `action:wait` 会认领并跳过推送。
 
 ## 6 Registry 与恢复
 

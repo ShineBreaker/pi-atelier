@@ -285,13 +285,26 @@ export default function (pi: ExtensionAPI) {
 
   // ── 注册 subagent 工具 ──────────────────────────────────────────────────
 
-  // ── PR-12: 异步后台任务表（wait:false 的 chain/tasks 派发挂这里）────────
+  // ── 异步后台任务表（默认异步派发的 chain/tasks 批次挂这里）──────────────
   // promise 挂兜底 catch：派发失败转成 failed RunResult（wait 总能拿到结果，
-  // 也避免永不被 wait 时变成 unhandled rejection）
+  // 也避免永不被 wait 时变成 unhandled rejection）。
+  // 完成即推送：后台 .then 投递结果到主会话（sendUserMessage），主会话无需轮询；
+  // 显式 action:wait 会认领（claimedBatches）跳过推送；推送后进 finishedOps 供事后核查。
   const pendingOps = new Map<
     string,
     { mode: "chain" | "parallel"; p: Promise<RunResult[]> }
   >();
+  // 已完成批次缓存：推送后仍可被 action:wait 手动收取，避免报“未找到”
+  const finishedOps = new Map<
+    string,
+    { mode: "chain" | "parallel"; results: RunResult[] }
+  >();
+  // 显式 wait 认领集合：wait 先标记，推送侧见标记则跳过（防推送与 wait 回复重复下发）
+  const claimedBatches = new Set<string>();
+  // peer 单消息推送去重：watchedPeers = watcher 已注册的 msgId；
+  // claimedPeers = 已被显式 wait 认领的 msgId（watcher 见标记跳过推送并清理）
+  const watchedPeers = new Set<string>();
+  const claimedPeers = new Set<string>();
   const pendingCatch = (p: Promise<RunResult[]>): Promise<RunResult[]> =>
     p.catch((err) => [
       {
@@ -305,6 +318,62 @@ export default function (pi: ExtensionAPI) {
         error: (err as Error).message,
       },
     ]);
+  /** 后台完成推送：结果以新 user 消息投递，主会话 settled 后自动恢复新一轮 */
+  const pushToMain = (text: string): void => {
+    try {
+      pi.sendUserMessage(text);
+    } catch (err) {
+      console.warn("[atelier:push] sendUserMessage 失败:", (err as Error).message);
+    }
+  };
+  const formatBatchPush = (id: string, mode: string, results: RunResult[]): string =>
+    [
+      `📬 [atelier 后台推送] ${mode} ${id} 完成（${results.filter((r) => r.status === "completed").length}/${results.length} 成功）：`,
+      "",
+      formatResults(results),
+    ].join("\n");
+  /** 批次后台推送：chain/parallel 异步派发的完成投递（被认领则跳过） */
+  const attachBatchPush = (
+    batchId: string,
+    mode: "chain" | "parallel",
+    p: Promise<RunResult[]>,
+  ): void => {
+    void p.then((results) => {
+      if (claimedBatches.has(batchId)) {
+        claimedBatches.delete(batchId);
+        return;
+      }
+      pendingOps.delete(batchId);
+      finishedOps.set(batchId, { mode, results });
+      appendSessionLog(mode, results);
+      pushToMain(formatBatchPush(batchId, mode, results));
+    });
+  };
+  /** 注册 peer 单消息 watcher：完成即推送（被显式 wait 认领则跳过） */
+  const watchPeerAndPush = (peer: PeerInfo, seq: number, startedAt: number, cwd: string): void => {
+    const msgId = `${peer.peerId}-m${seq}`;
+    if (watchedPeers.has(msgId)) return;
+    watchedPeers.add(msgId);
+    // signal 传 undefined：后台 watcher 与派发工具调用解耦，派发轮次取消不扼杀 peer 等待
+    void waitForPeerMessage(peer, seq, config, undefined).then((result) => {
+      watchedPeers.delete(msgId);
+      if (claimedPeers.has(msgId)) {
+        claimedPeers.delete(msgId);
+        return;
+      }
+      if (result.status === "completed") {
+        ensureWorkfile(result, cwd, startedAt);
+      }
+      appendSessionLog("single", [result]);
+      pushToMain(
+        [
+          `📬 [atelier 后台推送] peer ${peer.peerId}（${peer.agent}@${peer.harness}）msg #${seq} 完成：`,
+          "",
+          result.output,
+        ].join("\n"),
+      );
+    });
+  };
 
   pi.registerTool({
     name: "subagent",
@@ -313,9 +382,11 @@ export default function (pi: ExtensionAPI) {
       "派发到持久 peer（分屏 pane 里跑各类 agent harness：claude/codex/hermes/pi/…，",
       "按 tier 路由解析，外部 harness 优先）。peer 跑完不退出，可随时 send 新指令。",
       "派发：{agent, task} 单发、{tasks:[...]} 并行、{chain:[...]} 串行链。",
-      "默认异步返回句柄 peerId；wait:true 阻塞收结果。",
+      "默认异步：立即返回句柄，结果完成后自动推送新消息，无需轮询；",
+      "派发后如无其他独立工作请直接结束本轮（会话 settled，推送到达时自动恢复）；",
+      "wait:true 仅在后续工具强依赖本结果时阻塞等待。",
       "管理：action=send 向 peer 追加指令（忙碌=纠偏、空闲=新任务）；",
-      "action=wait 收结果；action=read 看实时输出；action=peers 看存活池；",
+      "action=wait 仅手动核查用；action=read 看实时输出；action=peers 看存活池；",
       "action=close 退役 peer；action=list 看 agent/harness 清单。",
     ].join(" "),
     parameters: SubagentParams,
@@ -456,6 +527,8 @@ export default function (pi: ExtensionAPI) {
         if (peer) {
           const busyBefore = peerBusy(peer);
           const sent = sendToPeer(peer, task, { images: params.images });
+          // 默认异步新任务：后台 watcher 完成后自动推送（wait:true 由下方分支就地收取，不挂 watcher）
+          if (!params.wait && sent.isNewTask) watchPeerAndPush(peer, sent.seq, Date.now(), effectiveCwd);
           if (params.wait) {
             const result = await waitForPeerMessage(peer, sent.seq, config, signal);
             return {
@@ -505,16 +578,30 @@ export default function (pi: ExtensionAPI) {
             isError: true,
           };
         }
-        // 先查 pendingOps（wait:false 派发的 chain/parallel 批次）
+        // 先查 pendingOps（默认异步派发的 chain/parallel 批次，在途）
         const pending = pendingOps.get(params.id);
         if (pending) {
           pendingOps.delete(params.id);
+          claimedBatches.add(params.id);
           const results = await pending.p;
           appendSessionLog(pending.mode, results);
           return {
             content: [{ type: "text", text: formatResults(results) }],
             details: makeDetails("wait")(results),
             isError: results.some((r) => r.status === "failed") || undefined,
+          };
+        }
+        // 再查已完成缓存（推送后仍可手动核查，不报“未找到”）
+        const finished = finishedOps.get(params.id);
+        if (finished) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `该批次已完成并推送（句柄 ${params.id}）：\n\n${formatResults(finished.results)}`,
+              },
+            ],
+            details: makeDetails("wait")(finished.results),
           };
         }
         // msgId 形式 "<peerId>-m<seq>" → 精确收某条消息
@@ -535,7 +622,12 @@ export default function (pi: ExtensionAPI) {
           };
         }
         const seq = m ? Number.parseInt(m[2], 10) : peer.msgSeq;
+        // 显式 wait 认领：后台 watcher 见标记跳过推送（由本分支直接返回结果）
+        const waitMsgId = `${peer.peerId}-m${seq}`;
+        claimedPeers.add(waitMsgId);
         const result = await waitForPeerMessage(peer, seq, config, signal);
+        // 无后台 watcher 时自行清理认领标记（有 watcher 时由 watcher 跳过并清理）
+        if (!watchedPeers.has(waitMsgId)) claimedPeers.delete(waitMsgId);
         if (result.status === "completed") {
           ensureWorkfile(result, effectiveCwd, Date.now() - result.durationMs);
         }
@@ -702,27 +794,30 @@ export default function (pi: ExtensionAPI) {
         }
 
         try {
-          // PR-12: wait:false → 预生成 parentRunId 作异步句柄，后台执行
-          if (params.wait === false) {
+          // 默认异步：后台执行，结果完成后自动推送（无需轮询）；wait:true 才阻塞
+          if (params.wait !== true) {
             const batchId = generateRunId();
+            // signal 传 undefined：后台批次与派发工具调用解耦，派发轮次取消不扼杀批次
+            const chainP = pendingCatch(runChain(
+              chainEntries,
+              config,
+              effectiveCwd,
+              params.task,
+              params.model,
+              undefined,
+              params.harness,
+              batchId,
+            ));
             pendingOps.set(batchId, {
               mode: "chain",
-              p: pendingCatch(runChain(
-                chainEntries,
-                config,
-                effectiveCwd,
-                params.task,
-                params.model,
-                signal,
-                params.harness,
-                batchId,
-              )),
+              p: chainP,
             });
+            attachBatchPush(batchId, "chain", chainP);
             return {
               content: [
                 {
                   type: "text",
-                  text: `chain 已后台派发（${params.chain.length} 步），句柄 **${batchId}**。\n收结果：action:wait id=${batchId} · 看 peers：action:peers`,
+                  text: `chain 已后台派发（${params.chain.length} 步），句柄 **${batchId}**。完成后自动推送，无需等待；如无其他独立工作请直接结束本轮。手动核查：action:wait id=${batchId} · 看 peers：action:peers`,
                 },
               ],
               details: makeDetails("chain")([]),
@@ -805,26 +900,29 @@ export default function (pi: ExtensionAPI) {
         }
 
         try {
-          // PR-12: wait:false → 预生成 parentRunId 作异步句柄，后台执行
-          if (params.wait === false) {
+          // 默认异步：后台执行，结果完成后自动推送（无需轮询）；wait:true 才阻塞
+          if (params.wait !== true) {
             const batchId = generateRunId();
+            // signal 传 undefined：后台批次与派发工具调用解耦，派发轮次取消不扼杀批次
+            const parallelP = pendingCatch(runParallelBatches(
+              taskEntries,
+              config,
+              effectiveCwd,
+              params.model,
+              undefined,
+              params.harness,
+              batchId,
+            ));
             pendingOps.set(batchId, {
               mode: "parallel",
-              p: pendingCatch(runParallelBatches(
-                taskEntries,
-                config,
-                effectiveCwd,
-                params.model,
-                signal,
-                params.harness,
-                batchId,
-              )),
+              p: parallelP,
             });
+            attachBatchPush(batchId, "parallel", parallelP);
             return {
               content: [
                 {
                   type: "text",
-                  text: `parallel 已后台派发（${params.tasks.length} 个 peer），句柄 **${batchId}**。\n收结果：action:wait id=${batchId} · 看 peers：action:peers`,
+                  text: `parallel 已后台派发（${params.tasks.length} 个 peer），句柄 **${batchId}**。完成后自动推送，无需等待；如无其他独立工作请直接结束本轮。手动核查：action:wait id=${batchId} · 看 peers：action:peers`,
                 },
               ],
               details: makeDetails("parallel")([]),
@@ -977,6 +1075,8 @@ export default function (pi: ExtensionAPI) {
           const sent = sendToPeer(peer, params.task, {
             images: params.images,
           });
+          // 默认异步：后台 watcher 完成后自动推送，无需轮询；wait:true 由下方分支就地收取
+          if (params.wait !== true && sent.isNewTask) watchPeerAndPush(peer, sent.seq, startedAt, effectiveCwd);
           // wait:true + 复用 peer：就地收结果
           if (params.wait === true) {
             const result = await waitForPeerMessage(peer, sent.seq, config, signal);
@@ -997,7 +1097,8 @@ export default function (pi: ExtensionAPI) {
                 text:
                   `已派发到 peer **${peer.peerId}**` +
                   `（${peer.agent}@${peer.harness}，pane ${peer.paneId}）msg #${sent.seq}\n` +
-                  `收结果：action:wait id=${peer.peerId} · ` +
+                  `完成后自动推送，无需等待；如无其他独立工作请直接结束本轮。` +
+                  `手动核查：action:wait id=${peer.peerId} · ` +
                   `看进度：action:read id=${peer.peerId} · ` +
                   `追加指令：action:send id=${peer.peerId}`,
               },
@@ -1587,6 +1688,12 @@ export default function (pi: ExtensionAPI) {
     pi.on("session_shutdown", () => {
       reviewedPlans.clear();
       finalizeSessionLog(process.cwd());
+      // 后台推送表清理（在途 watcher 的 .then 仍持有 promise，推送时 send 将失败并 warn，不崩溃）
+      pendingOps.clear();
+      finishedOps.clear();
+      claimedBatches.clear();
+      watchedPeers.clear();
+      claimedPeers.clear();
       // flush WAL，关闭 SQLite 连接
       closeRegistry();
     });

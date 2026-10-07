@@ -144,6 +144,11 @@ subagent({agent,task}) / /agentname
 
 **send 语义**（sendToPeer）：peer 空闲 → 新任务（seq 递增 + 文件契约重置）；peer 忙 → 舵手消息（文本注入 TUI 输入框，不动契约；一律不主动打断——harness 自行排队消化）。
 
+**异步推送**（默认）：缺省（非 wait:true）时 single/tasks/chain 一律后台执行、立即返回句柄；
+完成即 `pi.sendUserMessage` 推送到主会话（会话可先 settled，推送到达自动恢复），主 agent 无需轮询。
+在途批次挂 `pendingOps`，推送后进 `finishedOps` 供事后核查；显式 `action:wait` 会认领（claimed）并跳过推送；
+后台 watcher 与派发工具调用解耦（signal 传 undefined），派发轮次取消不扼杀等待。wait:true 仍是显式阻塞（后续工具强依赖结果时用）。
+
 **多路复用器**：`detectBackend()`（`HERDR_ENV=1`→herdr，`$TMUX`→tmux）。peer 方法集差异：herdr 有 `agentStatus`/`agentSession` 语义检测（integration 识别），tmux 只有 splitShell/sendText/sendKeys/readPane（完成检测退化到文件契约 + transcript 启发）。新增后端实现 `MultiplexerBackend` 接口 + `detect.ts` 分支。
 
 **runId/peerId 格式**：`sa-{base36ts}-{3bytehex}`（`launcher.ts` generateRunId / `peer.ts` openPeer 同形）。系统子 agent `sys-` 前缀（`core/system-agents.ts`）。
