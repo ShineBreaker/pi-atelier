@@ -105,8 +105,9 @@ blocked（权限门/输入门）走 `blockedGraceMs` 宽容期，超时返回带
 ## 5 编排模式
 
 - **single**：`executeWithFallback` 按路由链逐 harness 尝试（普通失败才换路由；abort/timeout/blocked 不重试）
-- **parallel**：每任务一 peer，首个开新行、后续行内右分；受 `maxConcurrency`/`maxTasks` 约束
-- **chain**：`{previous}`/`{task}` 替换照常；同 agent+同 harness 步骤自动复用 peer（上下文零损耗），跨 harness 走输出接力
+- **parallel**：每任务一 peer；批次首 peer 开新标签页（焦点不抢），后续在页内右分；受 `maxConcurrency`/`maxTasks` 约束
+- **chain**：`{previous}`/`{task}` 替换照常；同 agent+同 harness 步骤自动复用 peer（上下文零损耗），跨 harness 走输出接力；链首步开新标签页
+- **标签页**：每批派发一新页（herdr 即 tab，tmux 即 window），主会话页不再被挤占；同页末 peer 关闭即回收空页；openTab 失败回退同页分割
 - **异步默认**：缺省（非 wait:true）时 single/tasks/chain 一律后台执行，立即返回句柄；
   完成即 `sendUserMessage` 推送到主会话（会话可先 settled，推送到达自动恢复），无需轮询。
   在途批次挂 pendingOps，推送后进 finishedOps 供事后核查；显式 `action:wait` 会认领并跳过推送。
@@ -162,6 +163,8 @@ peer 方法集差异：
 | 方法          | herdr | tmux | 说明                                 |
 | ------------- | ----- | ---- | ------------------------------------ |
 | `splitShell`  | ✓     | ✓    | 空 shell pane（peer 生命周期前提）   |
+| `openTab`     | ✓     | ✓    | 新标签页（herdr tab / tmux window，批次入口） |
+| `closeTab`    | ✓     | ✓    | 空页回收（best-effort）              |
 | `sendText`    | ✓     | ✓    | 文本+回车注入                        |
 | `sendKeys`    | ✓     | ✓    | 按键序列（保留给显式打断原语）       |
 | `readPane`    | ✓     | ✓    | transcript 尾部                      |

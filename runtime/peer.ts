@@ -272,19 +272,20 @@ export interface OpenPeerOpts {
   adapter: HarnessAdapter;
   config: SubagentConfig;
   cwd: string;
-  /** parallel 布局：在已有 peer 行右侧分割 */
+  /** 同页布局：在已有 peer 右侧分割（与 newTab 互斥，anchor 优先） */
   rightOfPaneId?: string;
   splitRatio?: number;
+  /** 新开标签页派发：值为页标题；仅无 anchor 时生效，失败回退同页分割 */
+  newTab?: string;
   isSystemSpawned?: boolean;
   parentRunId?: string;
 }
 
-/**
- * 开一个新 peer：splitShell → 写 peer.json → 启动 harness TUI → 等待就绪。
- * 就绪检测：herdr 等 agent_status≠null（integration 识别到了）；
- * tmux/未识别 harness 退化为固定短延迟（输入会先排队进 shell，TUI 起来后
- * 可能丢失——所以固定等待给 TUI 留启动时间）。
- */
+ * 开一个新 peer：新标签页（或同页 splitShell）→ 写 peer.json → 启动 harness TUI → 等待就绪。
+ *
+ * 布局：newTab + 无 anchor → 新标签页（批次入口，焦点不抢）；有 anchor →
+ * 同页在 anchor 右侧分割（批次内后续 peer）；两者都无 → 同页下方分割（兼容老行为）。
+ * openTab 失败（后端不支持/抛错）→ 回退 splitShell，保证派发总能进行。
 export async function openPeer(opts: OpenPeerOpts): Promise<PeerInfo> {
   const { agent, route, adapter, config, cwd } = opts;
   const backend: MultiplexerBackend = detectBackend();
@@ -303,21 +304,43 @@ export async function openPeer(opts: OpenPeerOpts): Promise<PeerInfo> {
   const peerDir = path.join(getSubagentsDir(), peerId);
   fs.mkdirSync(peerDir, { recursive: true });
 
-  const paneId = backend.splitShell({
-    direction: opts.rightOfPaneId ? "right" : "down",
-    ratio: opts.splitRatio ?? 0.4,
-    targetPaneId: opts.rightOfPaneId,
-    cwd,
-    env: {
-      PI_SUBAGENT: "1",
-      ATELIER_PEER_DIR: peerDir,
-      ATELIER_PEER_ID: peerId,
-    },
-  });
+  const shellEnv = {
+    PI_SUBAGENT: "1",
+    ATELIER_PEER_DIR: peerDir,
+    ATELIER_PEER_ID: peerId,
+  };
+
+  // 批次入口开新页；anchor 复用同页分割；openTab 失败回退同页分割
+  let paneId: string;
+  let tabId: string | undefined;
+  if (opts.newTab && !opts.rightOfPaneId) {
+    try {
+      const opened = backend.openTab({ label: opts.newTab, cwd, env: shellEnv });
+      paneId = opened.paneId;
+      tabId = opened.tabId;
+    } catch (err) {
+      console.warn(`[atelier:peer] openTab 失败，回退同页分割: ${(err as Error).message}`);
+      paneId = backend.splitShell({
+        direction: "down",
+        ratio: opts.splitRatio ?? 0.4,
+        cwd,
+        env: shellEnv,
+      });
+    }
+  } else {
+    paneId = backend.splitShell({
+      direction: opts.rightOfPaneId ? "right" : "down",
+      ratio: opts.splitRatio ?? 0.4,
+      targetPaneId: opts.rightOfPaneId,
+      cwd,
+      env: shellEnv,
+    });
+  }
 
   const peer: PeerInfo = {
     peerId,
     paneId,
+    ...(tabId ? { tabId } : {}),
     mux: backend.name,
     harness: adapter.id,
     agent: agent.name,
@@ -490,7 +513,7 @@ export function readPeer(peer: PeerInfo, lines = 120): string {
   return detectBackend().readPane?.(peer.paneId, lines) ?? "";
 }
 
-/** 退役 peer：关 pane + 标记不再存活 */
+/** 退役 peer：关 pane + 标记不再存活；同页最后一个 peer 关闭时顺手回收空标签页 */
 export function closePeer(peer: PeerInfo): void {
   detectBackend().kill(peer.paneId);
   peer.alive = false;
@@ -498,4 +521,22 @@ export function closePeer(peer: PeerInfo): void {
   writePeerJson(peer);
   peers.delete(peer.peerId);
   markPeerClosed(peer.peerId);
+  // 空页回收：同 tabId 下无其他存活 peer → 关页（tmux 末 pane 自闭页时 closeTab 静默无操作）
+  if (peer.tabId) {
+    const tabId = peer.tabId;
+    let siblingAlive = false;
+    for (const p of peers.values()) {
+      if (p.tabId === tabId && p.alive) {
+        siblingAlive = true;
+        break;
+      }
+    }
+    if (!siblingAlive) {
+      try {
+        detectBackend().closeTab(tabId);
+      } catch {
+        /* best-effort：页可能已被用户手动关闭 */
+      }
+    }
+  }
 }

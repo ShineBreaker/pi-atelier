@@ -90,8 +90,8 @@ const MAX_ATTEMPTS = 3;
  * PR-12: peer 化派发 — 解析路由链，逐个 harness 开 peer 尝试。
  *
  * 对同一任务按路由链尝试不同的 (harness, model)（最多 MAX_ATTEMPTS 次）：
- *   1. 开 peer（splitShell + 起 TUI）→ send 第一条消息 → wait 收结果
- *   2. 失败 → closePeer 退役该 pane，用链中下一个路由重试
+ *   1. 开 peer（新标签页 + 起 TUI；有 anchor 时同页右接）→ send 第一条消息 → wait 收结果
+ *   2. 失败 → closePeer 退役该 pane（空页自动回收），用链中下一个路由重试
  *   3. 全部失败 → 返回最后一个失败结果
  *
  * 对 abort/timeout/blocked 不重试（不是路由问题；且 timeout/blocked 的
@@ -146,6 +146,8 @@ export async function executeWithFallback(
         cwd,
         rightOfPaneId: topRowTargetPaneId,
         splitRatio: (splitPercent ?? 50) / 100,
+        // 无 anchor（独立派发）→ 新标签页，不挤占主会话页
+        ...(!topRowTargetPaneId ? { newTab: `sub:${agent.name}` } : {}),
         isSystemSpawned: resolvedSystem,
         parentRunId,
       });
@@ -196,15 +198,13 @@ export async function executeWithFallback(
 /**
  * 并行执行多批任务，每批不超过 maxConcurrency。
  *
- * PR-12 peer 化：每个任务开一个 peer（第一个垂直分割开新行，后续在行内
+ * PR-12 peer 化：每个任务开一个 peer（批次首个 peer 开新标签页，后续在页内
  * 右侧水平分割），send 后 waitForPeerMessage 收结果。peer 完成后存活
  * （可 send 复用），不自动关 pane。
  *
- * 布局效果（以 3 个任务为例，herdr 下新行在下方）：
- *   ┌───────────────────────────────┐
- *   │  主 agent                      │
- *   ├──────────┬──────────┬──────────┤
- *   │  peer1   │  peer2   │  peer3   │   ← 新行，水平等分
+ * 布局效果（以 3 个任务为例）：主会话页不动，peer 全部进新标签页
+ *   ┌──────────┬──────────┬──────────┐
+ *   │  peer1   │  peer2   │  peer3   │   ← 新标签页，水平等分
  *   └──────────┴──────────┴──────────┘
  */
 export async function runParallelBatches(
@@ -272,6 +272,8 @@ export async function runParallelBatches(
           cwd: t.cwd ?? cwd,
           rightOfPaneId: rowAnchorPaneId,
           splitRatio: rowAnchorPaneId ? 0.5 : 0.4,
+          // 批次首个 peer（无 anchor）→ 新标签页，不挤占主会话页
+          ...(!rowAnchorPaneId ? { newTab: `sub:parallel:${parentRunId.slice(-4)}` } : {}),
           parentRunId,
         });
         rowAnchorPaneId = peer.paneId;
@@ -318,15 +320,12 @@ export async function runParallelBatches(
  * 每步的 task 中的 {previous} 被替换为上一步的输出，
  * {task} 被替换为根任务。每步使用 executeWithFallback 自动处理 fallback。
  *
- * 布局效果（以 3 步链为例）：
+ * 布局效果（以 3 步链为例）：主会话页不动，步骤全部进新标签页
  *   ┌──────────┬──────────┬──────────┐
- *   │  step1   │  step2   │  step3   │   ← 上方行，逐步水平扩展
- *   ├──────────┴──────────┴──────────┤
- *   │  主 agent                       │
- *   └────────────────────────────────┘
+ *   │  step1   │  step2   │  step3   │   ← 新标签页，逐步水平扩展
+ *   └──────────┴──────────┴──────────┘
  *
  * 注意：chain 的每一步依次启动，上一步完成后下一步才开始。
- * topRowTargetPaneId 确保所有步骤共享上方行。
  */
 export async function runChain(
   steps: Array<{ agent: AgentConfig; task: string; cwd?: string }>,
@@ -404,6 +403,11 @@ export async function runChain(
       .replaceAll("{previous}", previous)
       .replaceAll("{task}", rootTask ?? previous);
 
+    // anchor 失效（pane 已死）→ 清掉，本步走新标签页而不是对着死 pane 分割
+    if (rowAnchorPaneId && !paneIsAlive(rowAnchorPaneId)) {
+      rowAnchorPaneId = undefined;
+    }
+
     // PR-12: peer 化 dispatch —— 同 agent+同 harness 且存活时复用上一步
     // peer（peer 保有全部上下文，{previous} 替换只作冗余保险）；否则开新
     // peer 并在行内右接前 pane。
@@ -447,6 +451,8 @@ export async function runChain(
           cwd: step.cwd ?? cwd,
           rightOfPaneId: rowAnchorPaneId,
           splitRatio: rowAnchorPaneId ? 0.5 : 0.4,
+          // 链首步（无 anchor）→ 新标签页，不挤占主会话页
+          ...(!rowAnchorPaneId ? { newTab: `sub:chain:${parentRunId.slice(-4)}` } : {}),
           parentRunId,
         });
         stepPeer = peer;

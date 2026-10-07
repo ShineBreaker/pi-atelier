@@ -27,6 +27,8 @@ import { execFileSync } from "node:child_process";
 import type {
   MultiplexerBackend,
   MuxAgentStatus,
+  OpenedTab,
+  OpenTabOpts,
   SplitShellOpts,
 } from "./types.ts";
 
@@ -62,6 +64,29 @@ function parsePaneId(json: string): string {
     throw new Error(`herdr split 未返回 pane_id: ${json.slice(0, 200)}`);
   }
   return paneId;
+}
+
+/**
+ * 从 herdr tab create 的 JSON 响应中提取 root pane + tab ID。
+ *
+ * 返回形状：`{ result: { root_pane: { pane_id, tab_id }, tab: { tab_id } } }`。
+ * root_pane.tab_id 优先（pane 所在页），缺失时回退 tab.tab_id。
+ * 解析失败抛错——调用方 openPeer 捕获后回退同页 splitShell。
+ */
+function parseTabCreate(json: string): OpenedTab {
+  const parsed = JSON.parse(json) as {
+    result?: {
+      root_pane?: { pane_id?: string; tab_id?: string };
+      tab?: { tab_id?: string };
+    };
+  };
+  const paneId = parsed?.result?.root_pane?.pane_id;
+  const tabId =
+    parsed?.result?.root_pane?.tab_id ?? parsed?.result?.tab?.tab_id;
+  if (typeof paneId !== "string" || !paneId || typeof tabId !== "string" || !tabId) {
+    throw new Error(`herdr tab create 未返回 pane/tab id: ${json.slice(0, 200)}`);
+  }
+  return { tabId, paneId };
 }
 
 export class HerdrBackend implements MultiplexerBackend {
@@ -110,6 +135,27 @@ export class HerdrBackend implements MultiplexerBackend {
       }
     }
     return parsePaneId(herdrExec(args));
+  }
+
+  /**
+   * 新开标签页（peer 批次入口）。`tab create` 返回的 root_pane 就是可直接
+   * sendText 的空 shell pane；--no-focus 保证焦点不离开主会话页。
+   */
+  openTab(opts: OpenTabOpts): OpenedTab {
+    const args = ["tab", "create", "--no-focus"];
+    if (opts.label) args.push("--label", opts.label);
+    if (opts.cwd) args.push("--cwd", opts.cwd);
+    if (opts.env) {
+      for (const [k, v] of Object.entries(opts.env)) {
+        args.push("--env", `${k}=${v}`);
+      }
+    }
+    return parseTabCreate(herdrExec(args));
+  }
+
+  /** 关闭标签页（空页回收）。失败静默（页可能已被用户手动关闭）。 */
+  closeTab(tabId: string): void {
+    herdrExecMaybe(["tab", "close", tabId]);
   }
 
   /**

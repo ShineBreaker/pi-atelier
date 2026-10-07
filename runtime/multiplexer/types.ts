@@ -10,8 +10,9 @@
  *   - $TMUX 非空 → TmuxBackend（tmux split-window/kill-pane）
  *   - 都没有    → 抛错（atelier 必须运行在某个多路复用器内）
  *
- * peer 派发入口是 splitShell（空 shell pane）+ sendText（起 harness TUI）；
- * setTitle/isAlive/kill 服务 pane 标识与生命周期治理。
+ * peer 派发入口是 openTab（新标签页 + 空 shell pane）或 splitShell（同页分割）
+ * + sendText（起 harness TUI）；
+ * setTitle/isAlive/kill 服务 pane 标识与生命周期治理，closeTab 回收空标签页。
  */
 
 // ─── 后端接口 ─────────────────────────────────────────────────────────────
@@ -38,6 +39,22 @@ export interface SplitShellOpts {
   env?: Record<string, string>;
 }
 
+/** openTab 的输入：新标签页里的空 shell pane（peer 批次入口） */
+export interface OpenTabOpts {
+  /** 标签页标题（如 `sub:parallel:a1b2`） */
+  label?: string;
+  /** 新 pane 的工作目录 */
+  cwd?: string;
+  /** 注入新 pane 的环境变量（PI_SUBAGENT 等） */
+  env?: Record<string, string>;
+}
+
+/** openTab 的返回：新标签页 id + 其中唯一的空 shell pane id */
+export interface OpenedTab {
+  tabId: string;
+  paneId: string;
+}
+
 /**
  * 多路复用器后端接口。
  *
@@ -56,6 +73,19 @@ export interface MultiplexerBackend {
    * 返回新 pane ID；随后用 sendText 在其中启动 harness TUI。
    */
   splitShell(opts: SplitShellOpts): string;
+
+  /**
+   * 新开一个标签页（内含一个空 shell pane）——peer 批次入口。
+   * 焦点不离开当前页（herdr --no-focus / tmux -d）；随后用 sendText 在其中启动 harness TUI。
+   * tmux 里“标签页”即新 window。失败时调用方回退到 splitShell 同页分割。
+   */
+  openTab(opts: OpenTabOpts): OpenedTab;
+
+  /**
+   * 关闭标签页（peer 全部退役后回收空页）。best-effort：页已不存在即静默。
+   * tmux: kill-window；herdr: tab close（连其中活 pane 一起清理）。
+   */
+  closeTab(tabId: string): void;
 
   /**
    * 设置 pane 的标题/标签（用于在分屏界面识别 subagent）。

@@ -150,6 +150,8 @@ export interface RunResult {
 export interface PeerInfo {
   peerId: string;
   paneId: string;
+  /** 所在标签页 id（herdr tab_id / tmux window_id；同页分割的老 peer 无此字段） */
+  tabId?: string;
   /** 所在多路复用器后端名 */
   mux: "tmux" | "herdr";
   /** harness id（pi/claude/codex/hermes/<binary>） */

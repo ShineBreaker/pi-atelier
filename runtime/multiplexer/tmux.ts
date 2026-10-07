@@ -9,7 +9,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import type { MultiplexerBackend, SplitShellOpts } from "./types.ts";
+import type { MultiplexerBackend, OpenedTab, OpenTabOpts, SplitShellOpts } from "./types.ts";
 
 /** 同步执行 tmux 命令，返回 stdout（已 trim） */
 function tmuxExec(args: string[]): string {
@@ -83,6 +83,41 @@ export class TmuxBackend implements MultiplexerBackend {
       // 老 tmux 无 -e → 不带 env 重试
       return tmuxExec([...base, ...printId]);
     }
+  }
+
+  /**
+   * 新开 window（tmux 的“标签页”，peer 批次入口）。`-d` 不抢焦点；
+   * 初始 pane 即空 shell。env 同 splitShell 做老版本降级。
+   */
+  openTab(opts: OpenTabOpts): OpenedTab {
+    const base = ["new-window", "-d"];
+    if (opts.label) base.push("-n", opts.label);
+    if (opts.cwd) base.push("-c", opts.cwd);
+    const envArgs: string[] = [];
+    if (opts.env) {
+      for (const [k, v] of Object.entries(opts.env)) {
+        envArgs.push("-e", `${k}=${v}`);
+      }
+    }
+    const printIds = ["-P", "-F", "#{window_id}:#{pane_id}"];
+    const out = (() => {
+      try {
+        return tmuxExec([...base, ...envArgs, ...printIds]);
+      } catch {
+        // 老 tmux 无 -e → 不带 env 重试
+        return tmuxExec([...base, ...printIds]);
+      }
+    })();
+    const sep = out.lastIndexOf(":");
+    if (sep <= 0 || sep >= out.length - 1) {
+      throw new Error(`tmux new-window 未返回 window/pane id: ${out.slice(0, 200)}`);
+    }
+    return { tabId: out.slice(0, sep), paneId: out.slice(sep + 1) };
+  }
+
+  /** 关闭 window（空页回收）。失败静默（页可能已随末 pane 自动关闭）。 */
+  closeTab(tabId: string): void {
+    tmuxExecMaybe(["kill-window", "-t", tabId]);
   }
 
   /**

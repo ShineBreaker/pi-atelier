@@ -128,7 +128,8 @@ subagent({agent,task}) / /agentname
   → index.ts execute()             模式分流 + action 分发（send/wait/read/peers/close）
   → harness/resolve.ts             resolveRouteChain：params > frontmatter harness pin
                                    > tier routes（可用性 + modelSchedules 过滤）> pi 兜底
-  → peer.ts openPeer               backend.splitShell(--no-focus) → peer.json +
+  → peer.ts openPeer               新标签页 openTab（无 anchor 的批次入口，焦点不抢）或
+                                   同页 splitShell（批次内后续 peer，anchor 右侧）→ peer.json +
                                    registerPeer → sendText(launchCommand) 起 harness TUI
                                    → waitPeerReady（herdr agent_status / 固定延迟）
   → peer.ts sendToPeer             msgSeq++ → 写 brief-N.md + status.json{running}
@@ -149,7 +150,9 @@ subagent({agent,task}) / /agentname
 在途批次挂 `pendingOps`，推送后进 `finishedOps` 供事后核查；显式 `action:wait` 会认领（claimed）并跳过推送；
 后台 watcher 与派发工具调用解耦（signal 传 undefined），派发轮次取消不扼杀等待。wait:true 仍是显式阻塞（后续工具强依赖结果时用）。
 
-**多路复用器**：`detectBackend()`（`HERDR_ENV=1`→herdr，`$TMUX`→tmux）。peer 方法集差异：herdr 有 `agentStatus`/`agentSession` 语义检测（integration 识别），tmux 只有 splitShell/sendText/sendKeys/readPane（完成检测退化到文件契约 + transcript 启发）。新增后端实现 `MultiplexerBackend` 接口 + `detect.ts` 分支。
+**多路复用器**：`detectBackend()`（`HERDR_ENV=1`→herdr，`$TMUX`→tmux）。标签页抽象（`openTab`/`closeTab`）：herdr 即 tab（`tab create --no-focus`/`tab close`），tmux 即 window（`new-window -d`/`kill-window`）；openTab 失败回退同页 splitShell。peer 方法集差异：herdr 有 `agentStatus`/`agentSession` 语义检测（integration 识别），tmux 只有 splitShell/sendText/sendKeys/readPane（完成检测退化到文件契约 + transcript 启发）。新增后端实现 `MultiplexerBackend` 接口 + `detect.ts` 分支。
+
+**标签页生命周期**：每批派发（single/tasks/chain 首 peer）开一新页，批次内后续 peer 在页内右接；`closePeer` 关 pane 后同页无存活 peer 即关页（tmux 末 pane 自闭页时关页静默无操作）。
 
 **runId/peerId 格式**：`sa-{base36ts}-{3bytehex}`（`launcher.ts` generateRunId / `peer.ts` openPeer 同形）。系统子 agent `sys-` 前缀（`core/system-agents.ts`）。
 

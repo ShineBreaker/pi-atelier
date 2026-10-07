@@ -1069,6 +1069,8 @@ export default function (pi: ExtensionAPI) {
               adapter: getAdapter(route.harness)!,
               config,
               cwd: params.cwd ?? process.cwd(),
+              // 新开 peer → 新标签页，不挤占主会话页
+              newTab: `sub:${agent.name}`,
               isSystemSpawned: params.isSystemSpawned,
             });
           }
