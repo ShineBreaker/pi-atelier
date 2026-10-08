@@ -5,6 +5,46 @@ atelier 所有值得注意的变更都会记录在此文件。
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.0.1] - 2026-10-08
+
+### Changed
+
+- **新标签页派发**：批次首个 peer 改为在新标签页中打开（不抢当前焦点，
+  herdr 即 tab、tmux 即 window），同批内后续 peer 仍在该页内右接；
+  `openTab` 失败或后端不支持时自动回退同页分割，派发不会因此中断。
+  关闭 peer 时同页无存活 peer 则顺手回收空标签页。
+
+### Fixed
+
+- **缺省派发不再阻塞主会话**：single/tasks/chain 的缺省行为从「等待整批
+  完成」改为「后台执行 + 完成自动推送」——主会话发起后即可继续工作，
+  结果以新消息推回（会话已 settled 会自动恢复）；显式 `wait:true` 仍是
+  阻塞调用，`action:"wait"` 可事后认领已推送批次。
+- **扩展加载失败致 pi 无法启动**：`runtime/peer.ts` 一处文档注释的
+  定界符在编辑中丢失，裸文本行引发 TypeScript 解析错误，整个 atelier
+  扩展加载失败（pi 的 TUI 与 `-p` 全模式拒启）。仅补回定界符，无逻辑
+  变更。
+
+### 关联提交
+
+| 范围                                                                                     | Commit    | 说明                                            |
+| ---------------------------------------------------------------------------------------- | --------- | ----------------------------------------------- |
+| `runtime/multiplexer/` `runtime/peer.ts` `runtime/runner.ts` `index.ts` `core/types.ts`  | `42cff70` | FEATURE: 批次派发开新标签页（失败回退同页分割） |
+| `index.ts` `core/schemas.ts` `docs/` `README.md`                                         | `e91e274` | FIX: 缺省阻塞改为默认异步 + 完成推送            |
+| `runtime/peer.ts`                                                                        | `96cb1c9` | FIX: 补回 openPeer 注释定界符                   |
+| `AGENTS.md`                                                                              | `6e9bfc6` | DOCS: AGENTS.md 更新                            |
+
+---
+
+## 技术细节 / Migration Notes
+
+### 1. 无破坏性变更
+
+无 schema、配置与存储格式变更，0.4.0 的用户配置与历史数据直接兼容。
+两个行为面变化：批次派发默认开新标签页（需要旧布局时显式传
+`rightOfPaneId` 走同页分割）；缺省异步推送（显式 `wait:true` 恢复阻塞
+语义）。
+
 ## [0.4.0] - 2026-10-07
 
 ### Added
