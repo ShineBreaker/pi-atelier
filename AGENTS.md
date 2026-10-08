@@ -83,16 +83,16 @@ atelier/
 
 依赖方向无环：`core` ← `runtime` / `registry` / `lifecycle` / `ui` ← `index`。
 
-| 目录                   | 职责                                   | 关键文件                                                                                                                                                                                                         |
-| ---------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `core/`                | 配置/类型/发现（无外部循环依赖）       | `types.ts`（接口 + DEFAULT_CONFIG）、`config.ts`（atelier.json 解析）、`discovery.ts`、`schemas.ts`、`context.ts`（subagent-only 切片 + agent 路径解析）、`schedule.ts`（模型时段 DSL）、`system-agents.ts`      |
-| `context/`             | 插件内置 agent / prompt 模板（自包含） | `agents/*.md`（8 个 agent 定义，含 griller）、`prompts/*.md`（7 个链路模板）                                                                                                                                     |
+| 目录                   | 职责                                    | 关键文件                                                                                                                                                                                                                                                                                        |
+| ---------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `core/`                | 配置/类型/发现（无外部循环依赖）        | `types.ts`（接口 + DEFAULT_CONFIG）、`config.ts`（atelier.json 解析）、`discovery.ts`、`schemas.ts`、`context.ts`（subagent-only 切片 + agent 路径解析）、`schedule.ts`（模型时段 DSL）、`system-agents.ts`                                                                                     |
+| `context/`             | 插件内置 agent / prompt 模板（自包含）  | `agents/*.md`（8 个 agent 定义，含 griller）、`prompts/*.md`（7 个链路模板）                                                                                                                                                                                                                    |
 | `runtime/`             | 执行链路（peer 生命周期 → 监控 → 编排） | `peer.ts`（openPeer/sendToPeer/listPeers/closePeer + 文件契约）、`monitor.ts`（waitForPeerMessage）、`runner.ts`（executeWithFallback/runChain/runParallelBatches，路由感知）、`launcher.ts`（run 目录 + prepareAgentPrompt + pane 存活原语）、`workfile.ts`、`session-log.ts`、`formatting.ts` |
-| `runtime/harness/`     | harness 适配层（pi/claude/codex/…）    | `types.ts`（HarnessAdapter 接口）、`adapters.ts`（内置 adapter + genericAdapter 工厂）、`resolve.ts`（binary 探测 + 混合路由条目解析 + resolveRouteChain 路由链）                                                                                            |
-| `runtime/multiplexer/` | 多路复用器后端抽象（tmux/herdr）       | `types.ts`（MultiplexerBackend 接口，含 peer 方法集 splitShell/sendText/sendKeys/readPane/agentStatus/agentSession）、`detect.ts`（HERDR_ENV/$TMUX 检测）、`tmux.ts`、`herdr.ts`                                                                                |
-| `registry/`            | 状态索引与治理（SQLite + 恢复层）      | `registry.ts`（SQLite 全局索引）、`orphan-recovery.ts`、`return-header.ts`、`completion-gate.ts`                                                                                                               |
-| `lifecycle/`           | 长程任务生命周期                       | `checkpoint.ts`（跨崩溃 checkpoint）、`workflow.ts`（可视化 workflow）、`resume.ts`（续跳）                                                                                                                      |
-| `ui/`                  | TUI 交互面板（仅 `ctx.mode === "tui"`） | `config-panel.ts`（`/atelier-config` 的 SettingsList 面板，草稿编辑 + saveConfig 写回）                                                                                                                                            |
+| `runtime/harness/`     | harness 适配层（pi/claude/codex/…）     | `types.ts`（HarnessAdapter 接口）、`adapters.ts`（内置 adapter + genericAdapter 工厂）、`resolve.ts`（binary 探测 + 混合路由条目解析 + resolveRouteChain 路由链）                                                                                                                               |
+| `runtime/multiplexer/` | 多路复用器后端抽象（tmux/herdr）        | `types.ts`（MultiplexerBackend 接口，含 peer 方法集 splitShell/sendText/sendKeys/readPane/agentStatus/agentSession）、`detect.ts`（HERDR_ENV/$TMUX 检测）、`tmux.ts`、`herdr.ts`                                                                                                                |
+| `registry/`            | 状态索引与治理（SQLite + 恢复层）       | `registry.ts`（SQLite 全局索引）、`orphan-recovery.ts`、`return-header.ts`、`completion-gate.ts`                                                                                                                                                                                                |
+| `lifecycle/`           | 长程任务生命周期                        | `checkpoint.ts`（跨崩溃 checkpoint）、`workflow.ts`（可视化 workflow）、`resume.ts`（续跳）                                                                                                                                                                                                     |
+| `ui/`                  | TUI 交互面板（仅 `ctx.mode === "tui"`） | `config-panel.ts`（`/atelier-config` 的 SettingsList 面板，草稿编辑 + saveConfig 写回）                                                                                                                                                                                                         |
 
 ## Agent / Prompt 路径解析
 
@@ -172,16 +172,16 @@ atelier 配置从 `~/.config/pi/atelier.json`（独立文件，推荐）或 `set
 
 关键字段（`core/types.ts` SubagentConfig）：
 
-| 字段             | 说明                                                                                                                                                                             |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tiers`          | tier 名 → 路由链。三种形态：`"claude/sonnet"` 字符串 / `["claude/sonnet","codex","pi/zai/GLM-5.2"]` 数组 / 旧式 `{model, fallback[]}`。条目首段是已知 harness 或 PATH binary → 拆 harness/model；否则整串当 pi 模型名（向后兼容） |
-| `modelSchedules` | `{allow?:[], deny?:[]}` 时段限制。键支持 `harness/model` 复合键、裸 `model`、裸 `harness` 三种，resolveRouteChain 按序查。DSL：`{deny:["Mon-Fri 14:00-18:00"]}` / `{allow:["22:00-08:00"]}`（跨午夜自动展开） |
-| `defaultTier`    | agent frontmatter 无 tier 时的回退 tier                                                                                                                                          |
-| `peerApproval`   | peer harness 自治级别：`"full"` 最大自治 flag（claude `--dangerously-skip-permissions` 等）/ `"safe"` 保守自动接受 / `"off"` 默认权限门（易 blocked，需 send 解堵）              |
-| `blockedGraceMs` | peer 被权限门卡住（agent_status=blocked）的容忍时长，超时 wait 返回 blocked 提示（pane 不杀，send 可救）                                                                          |
-| `peerReadyTimeoutMs` | harness TUI 就绪等待上限（等 agent_status≠null；超时照发，输入排队）                                                                                                         |
-| `maxPeers`       | 存活 peer 数上限（0=不限）                                                                                                                                                       |
-| `harnessArgs`    | `{harness: [extra flags]}` 追加到 adapter launchCommand 末尾                                                                                                                     |
+| 字段                 | 说明                                                                                                                                                                                                                              |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tiers`              | tier 名 → 路由链。三种形态：`"claude/sonnet"` 字符串 / `["claude/sonnet","codex","pi/zai/GLM-5.2"]` 数组 / 旧式 `{model, fallback[]}`。条目首段是已知 harness 或 PATH binary → 拆 harness/model；否则整串当 pi 模型名（向后兼容） |
+| `modelSchedules`     | `{allow?:[], deny?:[]}` 时段限制。键支持 `harness/model` 复合键、裸 `model`、裸 `harness` 三种，resolveRouteChain 按序查。DSL：`{deny:["Mon-Fri 14:00-18:00"]}` / `{allow:["22:00-08:00"]}`（跨午夜自动展开）                     |
+| `defaultTier`        | agent frontmatter 无 tier 时的回退 tier                                                                                                                                                                                           |
+| `peerApproval`       | peer harness 自治级别：`"full"` 最大自治 flag（claude `--dangerously-skip-permissions` 等）/ `"safe"` 保守自动接受 / `"off"` 默认权限门（易 blocked，需 send 解堵）                                                               |
+| `blockedGraceMs`     | peer 被权限门卡住（agent_status=blocked）的容忍时长，超时 wait 返回 blocked 提示（pane 不杀，send 可救）                                                                                                                          |
+| `peerReadyTimeoutMs` | harness TUI 就绪等待上限（等 agent_status≠null；超时照发，输入排队）                                                                                                                                                              |
+| `maxPeers`           | 存活 peer 数上限（0=不限）                                                                                                                                                                                                        |
+| `harnessArgs`        | `{harness: [extra flags]}` 追加到 adapter launchCommand 末尾                                                                                                                                                                      |
 
 `/atelier-config` 打开 TUI 设置面板（SettingsList）编辑全部字段，保存时按 `resolveConfigTarget()` 写回 atelier.json（或 settings.json 的 `atelier` 段），并重赋值 `index.ts` 的 `config` 变量热重载（无需重启 pi）。
 
@@ -222,34 +222,11 @@ atelier 作为独立 pi-package（`github.com/ShineBreaker/pi-atelier`）发布�
 
 **一个 commit 对应一个独立的原子变更点**。改了一处 bug + 顺手清理了一处死代码 + 改了一处文档 → 拆成 3 个 commit，不要合并。
 
-- **FIX** — 修复 bug，独立成 commit。哪怕只是 1 行（如 `registerRun` 漏传 `runDir`），也单独提交。
-- **FEATURE** — 新能力。一个 feature 一个 commit。如果一个 feature 跨多个文件（如路径解析涉及 `core/context.ts` + `core/discovery.ts` + `runtime/launcher.ts`），整组打包成 1 个 commit，因为它们逻辑上不可分。
-- **DOCS** — 文档改动独立成 commit，与代码 commit 分离，便于 `git log --grep=DOCS` 检索。
-- **UPDATE** — 依赖升级、版本 bump、submodule 指针更新。
-- **REFACTOR** — 重构（无功能变化）。与 FEATURE 严格区分：改完应通过原有测试。
-- **INITIAL** — 仓库首次引导。
-
-### Commit 消息格式
-
-```
-TYPE: (scope) 一句话标题
-
-详细说明：
-- 改动动机（为什么改）
-- 关键决策（与备选方案对比的理由）
-- 影响范围（哪些文件、哪些 API、是否需 migration）
-
-Refs: #issue (如有)
-```
-
-**风格约束**：
-
-- 标题 ≤ 72 字，使用中文句号结尾
-- `scope` 用文件名或目录名（如 `launcher.ts`、`路径解析`）
-- body 每行 ≤ 100 字，使用项目内统一的"动机 / 决策 / 影响"三段式
-- 涉及多文件时 body 列出文件清单 + 各自改动
-- **不要**用 `git commit -am` 一把梭，必须 `git add` 选择性暂存
-- **必须** GPG 签名：`git config commit.gpgsign=true` 已配置，使用现有密钥 `62711D5E9CCDEC6907CADBF88637132222571907`
+- **fix** — 修复 bug，独立成 commit。哪怕只是 1 行（如 `registerRun` 漏传 `runDir`），也单独提交。
+- **feat** — 新能力。一个 feature 一个 commit。如果一个 feature 跨多个文件（如路径解析涉及 `core/context.ts` + `core/discovery.ts` + `runtime/launcher.ts`），整组打包成 1 个 commit，因为它们逻辑上不可分。
+- **docs** — 文档改动独立成 commit，与代码 commit 分离，便于 `git log --grep=DOCS` 检索。
+- **chore** — 依赖升级、版本 bump、submodule 指针更新。
+- **refactor** — 重构（无功能变化）。与 feat 严格区分：改完应通过原有测试。
 
 ### CHANGELOG
 
