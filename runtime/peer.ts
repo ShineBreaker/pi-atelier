@@ -281,11 +281,13 @@ export interface OpenPeerOpts {
   parentRunId?: string;
 }
 
+/**
  * 开一个新 peer：新标签页（或同页 splitShell）→ 写 peer.json → 启动 harness TUI → 等待就绪。
  *
  * 布局：newTab + 无 anchor → 新标签页（批次入口，焦点不抢）；有 anchor →
  * 同页在 anchor 右侧分割（批次内后续 peer）；两者都无 → 同页下方分割（兼容老行为）。
  * openTab 失败（后端不支持/抛错）→ 回退 splitShell，保证派发总能进行。
+ */
 export async function openPeer(opts: OpenPeerOpts): Promise<PeerInfo> {
   const { agent, route, adapter, config, cwd } = opts;
   const backend: MultiplexerBackend = detectBackend();
