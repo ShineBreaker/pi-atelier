@@ -1,0 +1,62 @@
+name: release
+
+# tag 推送自动发 GitHub Release：从 CHANGELOG.md 提取该版本段作为 notes
+# （notes-only、无资产——pi 插件是 TS 源码分发，社区惯例即纯 notes）。
+# 前置校验：tag 版本必须与 package.json 一致、CHANGELOG 必须有对应版本段。
+# workflow_dispatch 供手工补发/重发已有 tag（gh workflow run release -f tag=vX.Y.Z）。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（如 v0.4.1；须已存在于远端）"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 解析目标 tag
+        id: tag
+        run: |
+          echo "tag=${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: 校验 tag 与 package.json 版本一致
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          version="${TAG#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [ "$version" != "$pkg_version" ]; then
+            echo "::error::tag $TAG (= $version) 与 package.json version ($pkg_version) 不一致，拒绝发版"
+            exit 1
+          fi
+          echo "TAG_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: 从 CHANGELOG 提取版本段
+        run: |
+          node scripts/extract-release-notes.mjs "$TAG_VERSION" > RELEASE_NOTES.md
+          echo "--- RELEASE_NOTES.md 预览（前 10 行）---"
+          head -10 RELEASE_NOTES.md
+
+      - name: 创建/更新 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if gh release view "$TAG" --json id >/dev/null 2>&1; then
+            echo "release $TAG 已存在，更新 notes"
+            gh release edit "$TAG" --title "atelier $TAG" --notes-file RELEASE_NOTES.md
+          else
+            gh release create "$TAG" --verify-tag --latest \
+              --title "atelier $TAG" --notes-file RELEASE_NOTES.md
+          fi
