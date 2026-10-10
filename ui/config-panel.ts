@@ -380,7 +380,8 @@ export async function openConfigPanel(
           | "keepResults"
           | "timeoutMs"
           | "maxTasks"
-          | "maxConcurrency",
+          | "maxConcurrency"
+          | "idleGraceMs",
         raw: string,
       ): void => {
         const parsed = Number(raw.trim());
@@ -472,6 +473,21 @@ export async function openConfigPanel(
             }),
         },
         {
+          id: "autoClose",
+          label: "autoClose",
+          description:
+            "completed 后空闲自动回收 pane（仅可 resume 的 peer；send 自动恢复会话）",
+          currentValue: String(draft.autoClose),
+          values: ["true", "false"],
+        },
+        {
+          id: "idleGraceMs",
+          label: "idleGraceMs",
+          description: "autoClose 的空闲宽限期（毫秒，120000 = 2 分钟）",
+          currentValue: String(draft.idleGraceMs),
+          submenu: (cur, d) => textEdit("idleGraceMs（毫秒）", cur, d),
+        },
+        {
           id: "save",
           label: "💾 保存并应用",
           description: `写回 ${targetPath} 并热重载`,
@@ -491,10 +507,15 @@ export async function openConfigPanel(
             case "timeoutMs":
             case "maxTasks":
             case "maxConcurrency":
+            case "idleGraceMs":
               applyNumber(id, value);
               break;
             case "panePrefix":
               draft.panePrefix = value;
+              dirty = true;
+              break;
+            case "autoClose":
+              draft.autoClose = value === "true";
               dirty = true;
               break;
             case "defaultTier":

@@ -26,6 +26,7 @@ import {
   readStatus,
 } from "./launcher.ts";
 import { detectBackend } from "./multiplexer/detect.ts";
+import { scheduleIdleClose } from "./peer.ts";
 import {
   updateRunStatus,
   updateRunReturnStatus,
@@ -103,6 +104,9 @@ const REMEDIATE_GRACE_MS = 90_000;
  * 设计要点：
  *   - 超时/失败 **不杀 pane**（peer 是持久资产，后续可能仍写出文件或
  *     被 send 救活）；只有显式 abort 才杀 pane。
+ *   - completed 时调度空闲自动回收（scheduleIdleClose）：可 resume 的 peer
+ *     空闲超过 idleGraceMs 后 closePeer，之后 send 自动 resume 重开——
+ *     本等待返回时 pane 仍在，宽限期内追问免 resume 往返。
  *   - herdr blocked 状态走 blockedGraceMs 宽容期，超时返回带「用 send 解堵」
  *     提示的失败结果。
  *
@@ -146,6 +150,9 @@ export async function waitForPeerMessage(
     peer.lastStatus = status === "completed" ? "idle" : status;
     updatePeerMeta(peer.peerId, { lastStatus: peer.lastStatus });
     updateRunStatus({ runId: msgId, status, exitCode, error });
+    // completed 且可 resume → 调度空闲自动回收（idleGraceMs 内无新 send 才关；
+    // failed/blocked/timeout 永不自动关，保留 send 解堵语义）
+    if (status === "completed") scheduleIdleClose(peer, config);
     if (status === "completed" || status === "failed") {
       try {
         const parsed = parseReturnHeader(output);

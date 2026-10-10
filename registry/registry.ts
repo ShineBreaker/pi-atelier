@@ -787,6 +787,26 @@ export function markPeerClosed(peerId: string): void {
   }
 }
 
+/**
+ * 标记 peer 复活（reopenPeer 调用）：alive=1 + 新 pane_id + 清 closed_at。
+ * auto-close 后 send 触发 resume 重开时调；peer.json 仍是唯一真相，
+ * 这里只同步查询视图。
+ */
+export function markPeerReopened(peerId: string, paneId: string): void {
+  try {
+    const db = getRegistry();
+    db.prepare(
+      `UPDATE atelier_peers SET alive = 1, pane_id = ?, closed_at = NULL,
+       last_status = 'resumed' WHERE peer_id = ?`,
+    ).run(paneId, peerId);
+  } catch (err) {
+    console.warn(
+      `[atelier:registry] markPeerReopened failed for ${peerId}:`,
+      err,
+    );
+  }
+}
+
 /** registry 视角的存活 peer 列表（listPeers 的辅证；文件仍是真相） */
 export function listAlivePeers(): Array<{
   peerId: string;

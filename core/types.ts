@@ -122,6 +122,16 @@ export interface SubagentConfig {
    * 追加在 adapter launchCommand 产物末尾。
    */
   harnessArgs: Record<string, string[]>;
+  /**
+   * peer 消息 completed 后是否空闲自动回收（auto-close + resume 模型）：
+   * 宽限期（idleGraceMs）内无新 send → closePeer；之后 send 到该 peer
+   * 自动用 harness 原生 resume 恢复会话。
+   * 仅对可 resume 的 peer 生效（nativeSessionId + spec resume-args 齐备）；
+   * failed/blocked/timeout 永不自动关（保留 send 解堵语义）。
+   */
+  autoClose: boolean;
+  /** autoClose 的空闲宽限期（毫秒）：completed 后该时长内可免 resume 直接追问 */
+  idleGraceMs: number;
 }
 
 /** 单次 agent 运行的最终结果 */
@@ -219,4 +229,6 @@ export const DEFAULT_CONFIG: SubagentConfig = {
   peerReadyTimeoutMs: 30 * 1000,
   maxPeers: 8,
   harnessArgs: {},
+  autoClose: true,
+  idleGraceMs: 120 * 1000,
 };

@@ -55,6 +55,7 @@ import {
 } from "./runtime/monitor.ts";
 import {
   closePeer,
+  ensurePeer,
   findReusablePeer,
   getPeer,
   listPeers,
@@ -380,12 +381,14 @@ export default function (pi: ExtensionAPI) {
     label: "Subagent",
     description: [
       "派发到持久 peer（分屏 pane 里跑各类 agent harness：claude/codex/hermes/pi/…，",
-      "按 tier 路由解析，外部 harness 优先）。peer 跑完不退出，可随时 send 新指令。",
+      "按 tier 路由解析，外部 harness 优先）。peer 完成后空闲一段时间自动回收 pane，",
+      "但会话可随时用 harness 原生 resume 无损恢复——send(id,task) 对已回收 peer 自动重开，",
+      "上下文不丢；宽限期内（默认 120s）追问则直接复用原 pane。",
       "派发：{agent, task} 单发、{tasks:[...]} 并行、{chain:[...]} 串行链。",
       "默认异步：立即返回句柄，结果完成后自动推送新消息，无需轮询；",
       "派发后如无其他独立工作请直接结束本轮（会话 settled，推送到达时自动恢复）；",
       "wait:true 仅在后续工具强依赖本结果时阻塞等待。",
-      "管理：action=send 向 peer 追加指令（忙碌=纠偏、空闲=新任务）；",
+      "管理：action=send 向 peer 追加指令（忙碌=纠偏、空闲=新任务、已回收=resume 重开）；",
       "action=wait 仅手动核查用；action=read 看实时输出；action=peers 看存活池；",
       "action=close 退役 peer；action=list 看 agent/harness 清单。",
     ].join(" "),
@@ -484,7 +487,7 @@ export default function (pi: ExtensionAPI) {
                 "|--------|-------|---------|------|-------|---------------|",
                 ...lines,
                 "",
-                "操作：send(id,task) 追加指令 · wait(id) 收结果 · read(id) 看输出 · close(id) 退役",
+                "操作：send(id,task) 追加指令（已回收 peer 自动 resume 重开） · wait(id) 收结果 · read(id) 看输出 · close(id) 退役",
               ].join("\n"),
             },
           ],
@@ -505,15 +508,20 @@ export default function (pi: ExtensionAPI) {
         }
         let peer: PeerInfo | null = null;
         if (params.id) {
-          peer = getPeer(params.id);
+          // ensurePeer：存活直取；已被 auto-close 回收的 peer 用 harness 原生
+          // resume 自动重开（上下文无损），不可恢复（无 session 锚点）返回 null
+          peer = await ensurePeer(params.id, config);
           if (!peer) {
             return {
               content: [
                 {
                   type: "text",
-                  text: `peer "${params.id}" 不存在或已关闭（可用 peers: ${listPeers()
-                    .map((p) => p.peerId)
-                    .join(", ") || "none"}）`,
+                  text:
+                    `peer "${params.id}" 不存在或已关闭且无法 resume 恢复` +
+                    `（tmux 后端 / harness 未定义 resume-args 时不可恢复；` +
+                    `历史结果见 peerDir 的 result-N.md）。存活 peer: ${listPeers()
+                      .map((p) => p.peerId)
+                      .join(", ") || "none"}`,
                 },
               ],
               details: makeDetails("send")([]),
@@ -992,15 +1000,18 @@ export default function (pi: ExtensionAPI) {
           // PR-12: params.peer 显式复用已有 peer（agent 自主决定复用还是新开）
           let peer: PeerInfo | null = null;
           if (params.peer) {
-            peer = getPeer(params.peer);
+            // 已被 auto-close 回收的 peer 自动 resume 重开（与 action:send 语义一致）
+            peer = await ensurePeer(params.peer, config);
             if (!peer) {
               return {
                 content: [
                   {
                     type: "text",
-                    text: `peer "${params.peer}" 不存在或已关闭（peers: ${listPeers()
-                      .map((p) => p.peerId)
-                      .join(", ") || "none"}）`,
+                    text:
+                      `peer "${params.peer}" 不存在或已关闭且无法 resume 恢复` +
+                      `（历史结果见 peerDir 的 result-N.md）。存活 peer: ${listPeers()
+                        .map((p) => p.peerId)
+                        .join(", ") || "none"}`,
                   },
                 ],
                 details: makeDetails("single")([]),

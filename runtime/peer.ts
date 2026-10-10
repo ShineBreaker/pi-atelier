@@ -8,6 +8,13 @@
  * peer = pane + 活的 harness TUI 会话 + 角色 + 累积上下文。
  * 生命周期与 task 解耦：open 一次，send 多次（追问/纠偏/解堵），close 退役。
  *
+ * auto-close + resume（completed 后空闲回收）：
+ *   消息 completed 且空闲超过 idleGraceMs → 自动 closePeer 腾出 pane；
+ *   之后 send 到该 peer 时用 harness 原生 resume（peer.nativeSessionId
+ *   + spec resume-args）重开，harness 会话上下文无损恢复。
+ *   不可 resume 的 peer（无 nativeSessionId，如 tmux 后端 / generic
+ *   harness）永不自动关——关了就丢上下文，退化为常驻。
+ *
  * 文件契约（peerDir = $XDG_CACHE_HOME/pi/subagents/<peerId>/）：
  *   peer.json        — atelier 写的生命周期元数据（唯一权威）
  *   brief-N.md       — 第 N 条消息的完整指令（persona 只在 N=1 注入）
@@ -19,6 +26,7 @@
  *   peer 空闲 → 新任务：msgSeq++、写 brief-N、重置 status.json、发提交消息
  *   peer 忙   → 舵手：只把文本送进 TUI 输入（各 harness 排队行为不同，
  *              但一律不主动打断——打断需显式操作，将来按需引入）
+ *   peer 已关 → 可 resume 时自动重开（reopenPeer），否则报「无法恢复」
  */
 
 import * as crypto from "node:crypto";
@@ -38,11 +46,13 @@ import {
 import { detectBackend } from "./multiplexer/detect.ts";
 import type { MultiplexerBackend } from "./multiplexer/types.ts";
 import type { HarnessAdapter } from "./harness/types.ts";
+import { getAdapter } from "./harness/resolve.ts";
 import { piSession } from "../core/session.ts";
 import {
   registerPeer,
   updatePeerMeta,
   markPeerClosed,
+  markPeerReopened,
   registerRun,
 } from "../registry/registry.ts";
 import { isSystemAgent } from "../core/system-agents.ts";
@@ -445,6 +455,8 @@ export function sendToPeer(
   } = {},
 ): SendResult {
   const backend = detectBackend();
+  // 新消息 = 复用意图，撤销挂起的空闲自动回收
+  cancelIdleClose(peer.peerId);
   const busy = peerBusy(peer);
 
   if (busy) {
@@ -515,8 +527,149 @@ export function readPeer(peer: PeerInfo, lines = 120): string {
   return detectBackend().readPane?.(peer.paneId, lines) ?? "";
 }
 
+// ─── auto-close（completed 后空闲回收）───────────────────────────────────────
+
+const idleCloseTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/**
+ * peer 是否具备 resume 重开条件：nativeSessionId 在（herdr agentSession
+ * 报告过）且 harness spec 声明了 resume-args。二者缺一 → auto-close 禁用
+ * （关了就丢上下文，保留 pane 退化为常驻；tmux 后端恒不满足前者）。
+ */
+export function peerResumable(peer: PeerInfo): boolean {
+  if (!peer.nativeSessionId) return false;
+  const adapter = getAdapter(peer.harness);
+  return adapter !== null && typeof adapter.resumeCommand === "function";
+}
+
+/**
+ * 消息 completed 后调度空闲自动回收（monitor finish 调用）。
+ *
+ * idleGraceMs 内有新 send（sendToPeer 会 cancelIdleClose）→ 不关；
+ * 到期时 peer 已死/又被派活 → 跳过本轮（下次终态会重新调度）。
+ */
+export function scheduleIdleClose(peer: PeerInfo, config: SubagentConfig): void {
+  cancelIdleClose(peer.peerId);
+  if (!config.autoClose) return;
+  if (!peerResumable(peer)) return;
+  idleCloseTimers.set(
+    peer.peerId,
+    setTimeout(() => {
+      idleCloseTimers.delete(peer.peerId);
+      const current = getPeer(peer.peerId);
+      if (!current) return; // 已关/pane 已死
+      if (peerBusy(current)) return; // 宽限期边界恰好接到新任务
+      console.warn(
+        `[atelier:peer] ${current.peerId} 空闲超过 ${config.idleGraceMs}ms，自动回收（send 可 resume 恢复）`,
+      );
+      closePeer(current);
+    }, config.idleGraceMs),
+  );
+}
+
+/** 取消空闲自动回收（新消息到达 / 显式 close 时调） */
+export function cancelIdleClose(peerId: string): void {
+  const timer = idleCloseTimers.get(peerId);
+  if (timer) {
+    clearTimeout(timer);
+    idleCloseTimers.delete(peerId);
+  }
+}
+
+// ─── resume 重开（auto-close 后的复活路径）──────────────────────────────────
+
+/**
+ * 用 harness 原生 resume 恢复已关 peer：新标签页（失败回退同页分割）→
+ * 起 resume 命令 → 等 TUI 就绪。peerId/peerDir/msgSeq/契约文件全部沿用，
+ * 对调用方而言等价于 peer 从未死过。
+ *
+ * @returns 恢复后的 peer；不可恢复（无 session 锚点 / 无 mux）返回 null
+ */
+export async function reopenPeer(
+  peer: PeerInfo,
+  config: SubagentConfig,
+): Promise<PeerInfo | null> {
+  if (!peerResumable(peer)) return null;
+  const adapter = getAdapter(peer.harness)!;
+  const backend = tryBackend();
+  if (!backend) return null;
+
+  const shellEnv = {
+    PI_SUBAGENT: "1",
+    ATELIER_PEER_DIR: peer.peerDir,
+    ATELIER_PEER_ID: peer.peerId,
+  };
+  // 不查 maxPeers：复活的是既有 peer（显式 send 意图），不是新增派发
+  let paneId: string;
+  let tabId: string | undefined;
+  try {
+    const opened = backend.openTab({
+      label: `sub:${peer.agent}`,
+      cwd: peer.cwd,
+      env: shellEnv,
+    });
+    paneId = opened.paneId;
+    tabId = opened.tabId;
+  } catch (err) {
+    console.warn(
+      `[atelier:peer] reopen openTab 失败，回退同页分割: ${(err as Error).message}`,
+    );
+    paneId = backend.splitShell({
+      direction: "down",
+      ratio: 0.4,
+      cwd: peer.cwd,
+      env: shellEnv,
+    });
+  }
+
+  peer.paneId = paneId;
+  peer.tabId = tabId;
+  peer.alive = true;
+  peer.lastStatus = "resumed";
+  peers.set(peer.peerId, peer);
+  writePeerJson(peer);
+  markPeerReopened(peer.peerId, paneId);
+
+  backend.setTitle(
+    paneId,
+    `${config.panePrefix}${peer.agent}@${peer.harness}#${peer.peerId.slice(-4)}`,
+  );
+  console.warn(
+    `[atelier:peer] ${peer.peerId} resume 重开（harness=${peer.harness}, session=${peer.nativeSessionId}）`,
+  );
+  backend.sendText(
+    paneId,
+    adapter.resumeCommand!({
+      sessionId: peer.nativeSessionId!,
+      model: peer.model,
+      approval: config.peerApproval,
+      extraArgs: config.harnessArgs[peer.harness],
+    }),
+  );
+  await waitPeerReady(peer, backend, config.peerReadyTimeoutMs);
+  return peer;
+}
+
+/**
+ * 取可用 peer：alive 直接返回；已关（含 auto-close 回收）但可 resume →
+ * reopenPeer 恢复后返回。供 action:send 等需要 PeerInfo 的入口使用。
+ *
+ * @returns null = peer 不存在或无法恢复（无 session 锚点）
+ */
+export async function ensurePeer(
+  peerId: string,
+  config: SubagentConfig,
+): Promise<PeerInfo | null> {
+  const alive = getPeer(peerId);
+  if (alive) return alive;
+  const disk = readPeerJson(path.join(getSubagentsDir(), peerId));
+  if (!disk) return null;
+  return reopenPeer(disk, config);
+}
+
 /** 退役 peer：关 pane + 标记不再存活；同页最后一个 peer 关闭时顺手回收空标签页 */
 export function closePeer(peer: PeerInfo): void {
+  cancelIdleClose(peer.peerId);
   detectBackend().kill(peer.paneId);
   peer.alive = false;
   peer.lastStatus = "closed";

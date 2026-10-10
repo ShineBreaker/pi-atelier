@@ -128,6 +128,14 @@ export function loadConfig(): SubagentConfig {
         ? raw.maxPeers
         : DEFAULT_CONFIG.maxPeers,
     harnessArgs: parseHarnessArgs(raw.harnessArgs),
+    autoClose:
+      typeof raw.autoClose === "boolean"
+        ? raw.autoClose
+        : DEFAULT_CONFIG.autoClose,
+    idleGraceMs:
+      typeof raw.idleGraceMs === "number"
+        ? raw.idleGraceMs
+        : DEFAULT_CONFIG.idleGraceMs,
   };
 }
 
