@@ -1,6 +1,6 @@
 {
   "name": "pi-atelier",
-  "version": "0.4.0.1",
+  "version": "0.4.1",
   "private": true,
   "description": "harness 无关的 subagent peer 编排平台（持久会话 + 多 harness 路由 + 可视化分屏）",
   "license": "MIT",
