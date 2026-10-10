@@ -244,9 +244,29 @@ atelier 作为独立 pi-package（`github.com/ShineBreaker/pi-atelier`）发布�
 
 每次发版必须更新根目录的 `CHANGELOG.md`（[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格 + [语义化版本](https://semver.org/lang/zh-CN/)）。
 
-- **新增版本段**：在文件顶部 `## [X.Y.Z] - YYYY-MM-DD`，按 `### Fixed / ### Added / ### Changed / ### Removed / ### Deprecated / ### Security` 分类
-- **正文面向用户**：用业务语言描述变更带来的影响，不堆 API/行号
-- **附录面向开发者**：在版本段后加 `## 技术细节 / Migration Notes`（同文件或单独文件均可），含 schema 变更、path 兼容矩阵、已知问题
+**版本段文案结构**（固定三段式）：
+
+```markdown
+## [X.Y.Z] - YYYY-MM-DD
+
+<营销段：一段话讲清本次更新对用户的价值/卖点，简短有力，不堆术语。>
+
+---
+
+### Changed / Added / Fixed …
+
+<正文：每条只写「大概做了什么」一两句话 + `→ <commit>` 引用；
+具体实现细节、原理、迁移步骤一律不展开——commit message 里都有。>
+
+### 关联提交
+
+| Commit    | 说明 | scope |
+```
+
+- **营销段**：面向「要不要升级」的决策，写行为变化带来的体感收益
+- **正文克制**：细节的权威载体是 commit message，CHANGELOG 只做索引；
+  需要开发者细节时放 `## 技术细节 / Migration Notes` 附录段（schema
+  变更、path 兼容矩阵、已知问题），同样只写结论不写过程
 - **关联 commit 表**：列出本版本所有 commit 哈希 + 标题 + scope，方便溯源
 - **早期版本**：文件底部保留各历史版本段（不要合并或删除），形成可追溯的发布史
 - **CI/CD 不强求**：手工维护即可（atelier 节奏手动发版，无 CI 流水线）
