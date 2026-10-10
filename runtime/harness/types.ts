@@ -31,6 +31,12 @@ export interface HarnessLaunchOpts {
   env?: Record<string, string>;
 }
 
+/** 构建 harness 会话恢复命令的输入（auto-close 后 reopen 用） */
+export interface HarnessResumeOpts extends HarnessLaunchOpts {
+  /** harness 原生 session id（peer.nativeSessionId，herdr agentSession 报告） */
+  sessionId: string;
+}
+
 export interface HarnessAdapter {
   /** 规范 id，同时是 tier routes / frontmatter `harness:` / params.harness 的取值 */
   id: string;
@@ -49,4 +55,10 @@ export interface HarnessAdapter {
    * 发送方式是 pane run / send-keys，所以返回整条命令文本而非 argv。
    */
   launchCommand(opts: HarnessLaunchOpts): string;
+  /**
+   * 会话恢复命令（spec 声明 resume-args 的 harness 才有此方法）。
+   * 无此方法 = 不支持 resume → auto-close 对该 harness 自动禁用
+   * （关了就丢上下文，保留 pane 退化为常驻）。
+   */
+  resumeCommand?(opts: HarnessResumeOpts): string;
 }

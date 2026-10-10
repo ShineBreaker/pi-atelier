@@ -10,9 +10,10 @@
  *   "codex"           → harness=codex, model=undefined（继承 harness 默认）
  *   "pi/zai/GLM-5.2"  → harness=pi, model=zai/GLM-5.2（首个 / 前是 harness）
  *   "zai/GLM-5.2"     → 首段不是已知 harness/binary → pi/zai/GLM-5.2（旧配置兼容）
- *   "mcode"           → 不在内置表但 binary 在 PATH → generic harness mcode
+ *   "mcode"           → 不在 spec 表但 binary 在 PATH → generic harness mcode
  *
- * 判定顺序：内置 adapter id → PATH binary（generic）→ 整体当 pi 模型名。
+ * 判定顺序：spec 表 harness id（内置 harnesses.toml + 用户覆盖扩展）→
+ * PATH binary（generic）→ 整体当 pi 模型名。
  */
 
 import { execFileSync } from "node:child_process";
@@ -22,15 +23,35 @@ import type {
   SubagentConfig,
 } from "../../core/types.ts";
 import { isModelAllowedNow, parseSchedule } from "../../core/schedule.ts";
-import { BUILTIN_ADAPTERS, genericAdapter } from "./adapters.ts";
+import { genericAdapter, knownAdapters } from "./adapters.ts";
 import type { HarnessAdapter } from "./types.ts";
 
 // ─── Adapter 查找与探测 ──────────────────────────────────────────────────────
 
-const builtinById = new Map(BUILTIN_ADAPTERS.map((a) => [a.id, a]));
-const builtinByKind = new Map(
-  BUILTIN_ADAPTERS.filter((a) => a.herdrKind).map((a) => [a.herdrKind!, a]),
-);
+/**
+ * spec 合并表（内置 context/harnesses.toml + 用户 ~/.config/pi/atelier/
+ * harnesses.toml）生成的 adapter 索引。惰性：spec 文件读取有 getAgentDir
+ * 副作用，不能在 import 时求值；一次加载后缓存（与 binaryCache 同假设）。
+ */
+function adapterIndexes(): {
+  byId: Map<string, HarnessAdapter>;
+  byKind: Map<string, HarnessAdapter>;
+} {
+  const adapters = knownAdapters();
+  return {
+    byId: new Map(adapters.map((a) => [a.id, a])),
+    byKind: new Map(
+      adapters.filter((a) => a.herdrKind).map((a) => [a.herdrKind!, a]),
+    ),
+  };
+}
+
+let indexCache: ReturnType<typeof adapterIndexes> | null = null;
+
+function adapterIndex(): ReturnType<typeof adapterIndexes> {
+  if (!indexCache) indexCache = adapterIndexes();
+  return indexCache;
+}
 
 /** binary 探测缓存（一次扩展生命周期内 PATH 不变） */
 const binaryCache = new Map<string, string | null>();
@@ -52,18 +73,18 @@ export function findBinary(name: string): string | null {
 }
 
 /**
- * 按 id 取 adapter：内置优先，否则若 binary 在 PATH 造 generic adapter，
+ * 按 id 取 adapter：spec 表优先，否则若 binary 在 PATH 造 generic adapter，
  * 都没有返回 null。
  */
 export function getAdapter(id: string): HarnessAdapter | null {
-  const builtin = builtinById.get(id);
-  if (builtin) return findBinary(builtin.binaries[0]) ? builtin : null;
+  const known = adapterIndex().byId.get(id);
+  if (known) return findBinary(known.binaries[0]) ? known : null;
   return findBinary(id) ? genericAdapter(id) : null;
 }
 
-/** 只看内置表（不测 PATH）：用于 "x/y" 首段是否 harness 名的判定 */
-export function isBuiltinHarnessId(id: string): boolean {
-  return builtinById.has(id);
+/** 只看 spec 表（不测 PATH）：用于 "x/y" 首段是否 harness 名的判定 */
+export function isKnownHarnessId(id: string): boolean {
+  return adapterIndex().byId.has(id);
 }
 
 /** adapter 是否可用（至少一个 binary 在 PATH） */
@@ -71,14 +92,14 @@ export function adapterAvailable(a: HarnessAdapter): boolean {
   return a.binaries.some((b) => findBinary(b) !== null);
 }
 
-/** 列出当前可用的全部 harness（action:list 用） */
+/** 列出当前可用的全部 harness（action:list 用；含用户 spec 扩展项） */
 export function listAvailableHarnesses(): HarnessAdapter[] {
-  return BUILTIN_ADAPTERS.filter(adapterAvailable);
+  return knownAdapters().filter(adapterAvailable);
 }
 
 /** 按 herdr kind 名反查 adapter（herdr agent get 报的 agent 名 → 我们的 id） */
 export function adapterByHerdrKind(kind: string): HarnessAdapter | null {
-  return builtinByKind.get(kind) ?? null;
+  return adapterIndex().byKind.get(kind) ?? null;
 }
 
 // ─── 路由条目解析 ─────────────────────────────────────────────────────────────
@@ -87,22 +108,22 @@ export function adapterByHerdrKind(kind: string): HarnessAdapter | null {
  * 解析单条路由条目为 RouteCandidate。
  *
  * 规则：
- *  - 无 "/"：是内置 harness 或 PATH binary → harness；否则视为裸模型名→pi
- *  - 有 "/"：首段是内置 harness 或 PATH binary → harness/model 拆开；
+ *  - 无 "/"：是 spec 表 harness 或 PATH binary → harness；否则视为裸模型名→pi
+ *  - 有 "/"：首段是 spec 表 harness 或 PATH binary → harness/model 拆开；
  *            否则整串当 pi 模型名（如 "zai/GLM-5.2"）
  */
 export function parseRouteEntry(entry: string): RouteCandidate {
   const trimmed = entry.trim();
   const slash = trimmed.indexOf("/");
   if (slash === -1) {
-    if (isBuiltinHarnessId(trimmed) || findBinary(trimmed)) {
+    if (isKnownHarnessId(trimmed) || findBinary(trimmed)) {
       return { harness: trimmed };
     }
     return { harness: "pi", model: trimmed };
   }
   const head = trimmed.slice(0, slash);
   const rest = trimmed.slice(slash + 1);
-  if (isBuiltinHarnessId(head) || findBinary(head)) {
+  if (isKnownHarnessId(head) || findBinary(head)) {
     return { harness: head, model: rest || undefined };
   }
   return { harness: "pi", model: trimmed };

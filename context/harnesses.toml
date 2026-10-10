@@ -1,0 +1,75 @@
+# atelier 内置 harness spec — 各 CLI harness 的功能入口声明
+#
+# 本文件是插件自带的默认值（随 atelier 分发，插件做了适配即开箱可用）。
+# 用户覆盖/扩展：~/.config/pi/atelier/harnesses.toml（同名 harness 逐字段
+# 覆盖此处，新名 harness 追加；spec 详见 runtime/harness/spec.ts）。
+#
+# 字段说明：
+#   binaries      = PATH 探测候选（command -v 按序试，首个命中即用）【必填】
+#   herdr-kind    = herdr agent kind 名；在名单内可获得 agent_status 语义检测
+#   subcommand    = 启动子命令（拼在 binary 之后，如 hermes 的 "chat"）
+#   model-args    = 模型参数组（含 "{model}" 占位符；model 缺省时整组省略）
+#   approval-full = peerApproval=full 时的自治 flag 组
+#   approval-safe = peerApproval=safe 时的保守自动接受 flag 组
+#   resume-args   = 会话恢复参数组（含 "{sessionId}" 占位符；缺省 = 不支持
+#                   resume，auto-close 对该 harness 自动禁用）
+#
+# 占位符值做 shell 单引号转义；字面量 flag 原样输出。
+
+# ── pi ───────────────────────────────────────────────────────────────────────
+# TUI 默认无权限门（工具直接跑），approval 不产生 flag。
+# resume 用 --session <id>（非交互精确恢复；--resume 是交互 picker）。
+
+[harness.pi]
+binaries = ["pi"]
+herdr-kind = "pi"
+model-args = ["--model", "{model}"]
+resume-args = ["--session", "{sessionId}"]
+
+# ── claude ───────────────────────────────────────────────────────────────────
+# full: --dangerously-skip-permissions（无人值守前提）
+# safe: --permission-mode acceptEdits（文件编辑自动接受，bash 仍弹门→blocked）
+
+[harness.claude]
+binaries = ["claude"]
+herdr-kind = "claude"
+model-args = ["--model", "{model}"]
+approval-full = ["--dangerously-skip-permissions"]
+approval-safe = ["--permission-mode", "acceptEdits"]
+resume-args = ["--resume", "{sessionId}"]
+
+# ── codex ────────────────────────────────────────────────────────────────────
+# full/safe 都映射 --full-auto（workspace-write 沙箱内自动执行）；
+# 彻底无沙箱用 harnessArgs 显式加 --dangerously-bypass-approvals-and-sandbox。
+# resume 是子命令形态：codex resume <SESSION_ID>。
+
+[harness.codex]
+binaries = ["codex"]
+herdr-kind = "codex"
+model-args = ["--model", "{model}"]
+approval-full = ["--full-auto"]
+approval-safe = ["--full-auto"]
+resume-args = ["resume", "{sessionId}"]
+
+# ── hermes ───────────────────────────────────────────────────────────────────
+# `hermes chat` 启动 TUI；--model 是常见约定的猜测，不生效时用 harnessArgs 覆盖。
+
+[harness.hermes]
+binaries = ["hermes"]
+herdr-kind = "hermes"
+subcommand = "chat"
+model-args = ["--model", "{model}"]
+resume-args = ["chat", "--resume", "{sessionId}"]
+
+# ── opencode / omp ───────────────────────────────────────────────────────────
+# 与 hermes 同构：TUI 即 binary 本身，模型走 --model 猜测。
+
+[harness.opencode]
+binaries = ["opencode"]
+herdr-kind = "opencode"
+model-args = ["--model", "{model}"]
+
+[harness.omp]
+binaries = ["omp"]
+herdr-kind = "omp"
+model-args = ["--model", "{model}"]
