@@ -1,6 +1,6 @@
 # atelier — Subagent 可视化执行平台
 
-基于 tmux/herdr 分屏的 **peer 编排**扩展。`subagent` 工具把任务派发给分屏 pane 里的持久 harness 会话（pi/claude/codex/hermes/任意 TUI agent），peer 跑完不退出，主会话可随时 `action:"send"` 追加指令（追问/纠偏/解堵）。结果通过 peer 目录文件契约（`brief-N.md`/`result-N.md`/`status.json`）结构化回收。
+基于 tmux/herdr 分屏的 **peer 编排**扩展。`subagent` 工具把任务派发给分屏 pane 里的持久 harness 会话（pi/claude/codex/hermes/任意 TUI agent），主会话可随时 `action:"send"` 追加指令（追问/纠偏/解堵）；peer 完成后空闲超时自动回收 pane，需要时用 harness 原生 resume 无损恢复。结果通过 peer 目录文件契约（`brief-N.md`/`result-N.md`/`status.json`）结构化回收。
 
 架构概览见 `README.md` 第 0 节。
 
@@ -22,6 +22,7 @@ atelier/
 │   │   ├── scout.md
 │   │   ├── visual.md
 │   │   └── worker.md
+│   ├── harnesses.toml
 │   └── prompts/
 │       ├── design-review-implement.md
 │       ├── implement-and-review.md
@@ -54,6 +55,7 @@ atelier/
 │   ├── harness/
 │   │   ├── adapters.ts
 │   │   ├── resolve.ts
+│   │   ├── spec.ts
 │   │   └── types.ts
 │   ├── multiplexer/
 │   │   ├── detect.ts
@@ -86,9 +88,9 @@ atelier/
 | 目录                   | 职责                                    | 关键文件                                                                                                                                                                                                                                                                                        |
 | ---------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `core/`                | 配置/类型/发现（无外部循环依赖）        | `types.ts`（接口 + DEFAULT_CONFIG）、`config.ts`（atelier.json 解析）、`discovery.ts`、`schemas.ts`、`context.ts`（subagent-only 切片 + agent 路径解析）、`schedule.ts`（模型时段 DSL）、`system-agents.ts`                                                                                     |
-| `context/`             | 插件内置 agent / prompt 模板（自包含）  | `agents/*.md`（8 个 agent 定义，含 griller）、`prompts/*.md`（7 个链路模板）                                                                                                                                                                                                                    |
-| `runtime/`             | 执行链路（peer 生命周期 → 监控 → 编排） | `peer.ts`（openPeer/sendToPeer/listPeers/closePeer + 文件契约）、`monitor.ts`（waitForPeerMessage）、`runner.ts`（executeWithFallback/runChain/runParallelBatches，路由感知）、`launcher.ts`（run 目录 + prepareAgentPrompt + pane 存活原语）、`workfile.ts`、`session-log.ts`、`formatting.ts` |
-| `runtime/harness/`     | harness 适配层（pi/claude/codex/…）     | `types.ts`（HarnessAdapter 接口）、`adapters.ts`（内置 adapter + genericAdapter 工厂）、`resolve.ts`（binary 探测 + 混合路由条目解析 + resolveRouteChain 路由链）                                                                                                                               |
+| `context/`             | 插件内置 agent / prompt 模板（自包含）  | `agents/*.md`（8 个 agent 定义，含 griller）、`prompts/*.md`（7 个链路模板）、`harnesses.toml`（内置 harness spec 默认表）                                                                                                                               |
+| `runtime/`             | 执行链路（peer 生命周期 → 监控 → 编排） | `peer.ts`（openPeer/sendToPeer/closePeer + auto-close 调度 + resume 重开 + 文件契约）、`monitor.ts`（waitForPeerMessage）、`runner.ts`（executeWithFallback/runChain/runParallelBatches，路由感知）、`launcher.ts`（run 目录 + prepareAgentPrompt + pane 存活原语）、`workfile.ts`、`session-log.ts`、`formatting.ts` |
+| `runtime/harness/`     | harness 适配层（pi/claude/codex/…）     | `types.ts`（HarnessAdapter 接口，含 resumeCommand）、`spec.ts`（harnesses.toml 加载合并 + assembleCommand 组装器）、`adapters.ts`（spec→adapter 编译 + genericAdapter 工厂）、`resolve.ts`（binary 探测 + 混合路由条目解析 + resolveRouteChain 路由链）            |
 | `runtime/multiplexer/` | 多路复用器后端抽象（tmux/herdr）        | `types.ts`（MultiplexerBackend 接口，含 peer 方法集 splitShell/sendText/sendKeys/readPane/agentStatus/agentSession）、`detect.ts`（HERDR_ENV/$TMUX 检测）、`tmux.ts`、`herdr.ts`                                                                                                                |
 | `registry/`            | 状态索引与治理（SQLite + 恢复层）       | `registry.ts`（SQLite 全局索引）、`orphan-recovery.ts`、`return-header.ts`、`completion-gate.ts`                                                                                                                                                                                                |
 | `lifecycle/`           | 长程任务生命周期                        | `checkpoint.ts`（跨崩溃 checkpoint）、`workflow.ts`（可视化 workflow）、`resume.ts`（续跳）                                                                                                                                                                                                     |
@@ -138,12 +140,18 @@ subagent({agent,task}) / /agentname
                                    （working→idle/done）→ transcript 稳定性启发
                                    → 判定停止但缺 result-N.md 时先发补写指令
                                    （90s 窗口），补救无效再 readPane 兜底提取
+                                   → completed 时 scheduleIdleClose（空闲回收调度）
+  → peer.ts scheduleIdleClose      idleGraceMs 内无新 send → closePeer（自动回收）；
+                                   之后 send 该 peer → ensurePeer → reopenPeer
+                                   （harness 原生 resume 恢复，上下文无损）
   → workfile.ts ensureWorkfile     兜底持久化
 ```
 
 **peer 目录**（`$XDG_CACHE_HOME/pi/subagents/<peerId>/`）：`peer.json`（atelier 写的生命周期权威）、`brief-N.md`、`result-N.md`（peer 写，含 Return Header）、`status.json`（共享终态信号：atelier 派单写 `{running,msgSeq:N}`，peer 覆写 `{completed|failed|blocked,msgSeq:N}`）、`task.md`（兼容旧路径）。每条消息对应 registry 一行 run（runId=`<peerId>-m<seq>`）。
 
-**send 语义**（sendToPeer）：peer 空闲 → 新任务（seq 递增 + 文件契约重置）；peer 忙 → 舵手消息（文本注入 TUI 输入框，不动契约；一律不主动打断——harness 自行排队消化）。
+**send 语义**（sendToPeer）：peer 空闲 → 新任务（seq 递增 + 文件契约重置）；peer 忙 → 舵手消息（文本注入 TUI 输入框，不动契约；一律不主动打断——harness 自行排队消化）；peer 已被 auto-close 回收 → `ensurePeer` 自动 `reopenPeer`（harness 原生 resume 恢复会话后走新任务流程），不可恢复（无 session 锚点）时报错并指向 result 文件。
+
+**auto-close + resume**：消息 completed 且空闲超过 `idleGraceMs`（默认 120s）→ `closePeer` 自动回收 pane；此后 send 用 harness 原生 resume（spec `resume-args`，锚点 = `peer.nativeSessionId`，herdr `agentSession` 报告）重开，上下文无损。安全阀：无 `nativeSessionId`（tmux 后端 / integration 未识别）或 spec 未声明 `resume-args` 的 peer 永不自动关；failed/blocked/timeout 永不自动关（保留 send 解堵语义）。chain 步间隔毫秒级（cancelIdleClose 撤销回收），链尾完成后照常回收。
 
 **异步推送**（默认）：缺省（非 wait:true）时 single/tasks/chain 一律后台执行、立即返回句柄；
 完成即 `pi.sendUserMessage` 推送到主会话（会话可先 settled，推送到达自动恢复），主 agent 无需轮询。
@@ -182,6 +190,10 @@ atelier 配置从 `~/.config/pi/atelier.json`（独立文件，推荐）或 `set
 | `peerReadyTimeoutMs` | harness TUI 就绪等待上限（等 agent_status≠null；超时照发，输入排队）                                                                                                                                                              |
 | `maxPeers`           | 存活 peer 数上限（0=不限）                                                                                                                                                                                                        |
 | `harnessArgs`        | `{harness: [extra flags]}` 追加到 adapter launchCommand 末尾                                                                                                                                                                      |
+| `autoClose`          | completed 后空闲自动回收 pane（默认 true；仅可 resume 的 peer 生效）                                                                                                                                                              |
+| `idleGraceMs`        | autoClose 空闲宽限期（默认 120000；期内追问免 resume 往返）                                                                                                                                                                       |
+
+**harness spec**（独立于 atelier.json 的 TOML，`runtime/harness/spec.ts` 加载）：各 CLI 的功能入口（binaries/herdr-kind/subcommand/model-args/approval-*/resume-args）声明式存储，插件内置默认 `context/harnesses.toml`（随插件分发，适配即开箱可用）+ 用户覆盖 `~/.config/pi/atelier/harnesses.toml`（同名 harness 逐字段覆盖，数组显式空 = 清除；新名扩展）。Bun 原生 `TOML.parse` 零依赖。适配新 harness 只改 toml 不动 TS。
 
 `/atelier-config` 打开 TUI 设置面板（SettingsList）编辑全部字段，保存时按 `resolveConfigTarget()` 写回 atelier.json（或 settings.json 的 `atelier` 段），并重赋值 `index.ts` 的 `config` 变量热重载（无需重启 pi）。
 
@@ -205,9 +217,9 @@ atelier 配置从 `~/.config/pi/atelier.json`（独立文件，推荐）或 `set
 ## 修改约束
 
 - **多路复用器后端**：`runtime/multiplexer/` 抽象了 tmux/herdr 差异。`detectBackend()` 按 `HERDR_ENV=1`/`$TMUX` 自动选择。新增后端实现接口 + 在 `detect.ts` 加检测分支。peer 方法集（splitShell/sendText/sendKeys/readPane/agentStatus/agentSession）里后两个仅 herdr 有——接口上标 optional，调用方必须 `?.` 并降级。注意 herdr pane 是常驻 shell（run 的命令退出后 pane 不消失）——这正是 peer 生命周期的前提，splitShell 创建的 pane 不带自闭合。
-- **peer 生命周期权威**：`peerDir/peer.json` 是 peer 元数据的唯一权威（SQLite `atelier_peers` 只是索引）。`alive:true` 的 peer 目录永不被 cleanupOldRuns 清理。等待超时/失败**不杀 pane**——只有显式 abort 或 `action:"close"` 才关。
+- **peer 生命周期权威**：`peerDir/peer.json` 是 peer 元数据的唯一权威（SQLite `atelier_peers` 只是索引）。`alive:true` 的 peer 目录永不被 cleanupOldRuns 清理。等待超时/失败**不杀 pane**——只有显式 abort、`action:"close"` 或 auto-close（completed 后空闲超时，仅限可 resume 的 peer）才关。
 - **status.json 共享契约**：atelier 派单写 `{status:"running",msgSeq:N}`；peer 完成覆写 `{completed|failed|blocked,msgSeq:N}`。monitor 只认 `msgSeq>=当前seq` 的终态，防止旧 status 误判新消息。
-- **harness adapter**：`runtime/harness/adapters.ts` 内置 pi/claude/codex/hermes/opencode/omp；`genericAdapter(binary)` 零定制接入任意 PATH binary。launchCommand 返回单条 shell 命令文本（pane run/send-keys 送进 shell）。
+- **harness spec**：各 CLI 功能入口的声明式定义在 `context/harnesses.toml`（插件内置默认）+ `~/.config/pi/atelier/harnesses.toml`（用户覆盖/扩展），`runtime/harness/spec.ts` 负责加载合并（惰性缓存）与命令组装（`assembleCommand`：launch/resume 共用，占位符 `{model}`/`{sessionId}` token 级替换 + 缺省整组省略）。`adapters.ts` 只做 spec→adapter 编译（`specToAdapter`）+ `genericAdapter` 兜底（无 resume 能力）。适配新 harness 优先改 toml；组装逻辑变更才动 spec.ts。
 - **模型时段限制**：`core/schedule.ts` 提供 allow/deny DSL，`harness/resolve.ts` 的 `resolveRouteChain` 按 `modelSchedules` 过滤（键：`harness/model` > `model` > `harness`）。
 - **completion-gate.ts** 的 `isTaskToolAvailable()` 当前恒 false（pi 无 task 工具），`decide()` 是 no-op。架构保留待 pi 接入 task 工具后激活，不要误删。
 - **CAPABILITY_SELF_CHECK**（`runtime/launcher.ts`）硬注入所有 subagent prompt——设计决策，所有 subagent 无条件获得能力自检。

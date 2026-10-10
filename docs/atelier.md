@@ -17,12 +17,26 @@ v2（当前）:   subagent = 持久 peer   open(harness) → [msg₁→result₁
 生命周期与 task 解耦：open 一次，send 多次，显式 close 退役。
 等待超时/失败**不杀 pane**——peer 是持久资产，可以被后续 send 救活。
 
+**auto-close + resume（空闲回收）**：消息 completed 后空闲超过
+`idleGraceMs`（默认 120s），atelier 自动 closePeer 腾出 pane；之后再
+`send` 该 peer 时用 harness 原生 resume（`claude --resume <id>` /
+`codex resume <id>` / `pi --session <id>` / `hermes chat --resume <id>`）
+重开，harness 会话上下文无损恢复。宽限期内追问则直接复用原 pane，
+零开销。安全阀：拿不到原生 session id（tmux 后端 / integration 未识别）
+或 harness 未声明 resume 命令的 peer **永不自动关**——关了就丢上下文；
+failed/blocked/timeout 同样不自动关（保留 send 解堵语义）。
+
 ## 2 Harness 无关路由
 
 派发目标不再只有 pi。`runtime/harness/` 提供 adapter 抽象：
 
-- **内置 adapter**：`pi` / `claude` / `codex` / `hermes` / `opencode` / `omp`
-- **generic adapter**：任意 PATH binary 零定制接入（如 `mcode`、`zcode`）
+- **harness spec（TOML 声明式）**：每个 CLI 的功能入口（启动子命令、
+  model/approval/resume 参数组）存于统一配置文件，插件内置默认
+  `context/harnesses.toml`（随 atelier 分发，适配即开箱可用）+
+  用户覆盖 `~/.config/pi/atelier/harnesses.toml`（同名 harness 逐字段
+  覆盖，新名扩展），见 §7
+- **generic adapter**：任意未登记的 PATH binary 零定制接入（如 `mcode`、
+  `zcode`）——启动命令 = binary 名 + extraArgs，无 resume 能力
 - **detect**：`command -v` 按序探测 binary；不可用路由自动跳过
 
 路由条目三种形态：
@@ -69,10 +83,11 @@ subagent({action:"status",id?})        → 运行状态/registry 视图
 
 **send 语义分化**：
 
-| peer 状态   | send 语义 | 说明                                        |
-| ----------- | --------- | ------------------------------------------- |
-| 空闲/done   | 新任务    | msgSeq++、写 brief-N、重置 status.json      |
-| working     | 舵手消息  | 文本注入 TUI 输入框，不动契约；不主动打断   |
+| peer 状态          | send 语义 | 说明                                             |
+| ------------------ | --------- | ------------------------------------------------ |
+| 空闲/done          | 新任务    | msgSeq++、写 brief-N、重置 status.json           |
+| working            | 舵手消息  | 文本注入 TUI 输入框，不动契约；不主动打断        |
+| 已回收（可 resume）| 自动重开  | harness 原生 resume 恢复会话后走新任务流程       |
 
 peer 复用策略由主 agent 决定：默认新开；`peer` 显式指定；`send` 传
 agent 角色名自动路由到该角色空闲 peer；chain 内同 agent+同 harness
@@ -144,6 +159,8 @@ TUI 面板编辑，保存即热重载。
 | `peerReadyTimeoutMs`| —         | harness TUI 就绪等待上限                                |
 | `maxPeers`          | `0`       | peer 池上限（0=不限；超限 openPeer 抛错）               |
 | `harnessArgs`       | —         | `{harness: [extra flags]}` 追加启动参数                 |
+| `autoClose`         | `true`    | completed 后空闲自动回收 pane（仅可 resume 的 peer）   |
+| `idleGraceMs`       | `120000`  | autoClose 空闲宽限期（期内追问免 resume 往返）         |
 | `maxConcurrency`    | —         | parallel 批内并发上限                                   |
 | `maxTasks`          | —         | parallel 任务总数上限                                   |
 | `timeoutMs`         | —         | 单条消息等待超时（不杀 pane）                           |
@@ -152,6 +169,33 @@ TUI 面板编辑，保存即热重载。
 | `panePrefix`        | `sub:`    | pane 标题前缀（标题 = `sub:角色@harness#peerId尾4位`）  |
 
 agent frontmatter 支持 `harness:` pin（锁定派发目标）与 `tier:`。
+
+### 7.1 harness spec（harnesses.toml）
+
+各 CLI harness 的功能入口统一存 TOML（Bun 原生解析，零依赖）：
+
+- 插件内置默认：atelier 包内 `context/harnesses.toml`（随插件分发，
+  内置适配 pi/claude/codex/hermes/opencode/omp）
+- 用户覆盖/扩展：`~/.config/pi/atelier/harnesses.toml`（同名 harness
+  逐字段覆盖内置，新名追加；改后重启 pi 生效）
+
+```toml
+[harness.claude]
+binaries = ["claude"]              # PATH 探测候选【必填，用户覆盖内置时可不写】
+herdr-kind = "claude"              # herdr agent kind（agent_status 检测资格）
+model-args = ["--model", "{model}"]        # model 缺省时整组省略
+approval-full = ["--dangerously-skip-permissions"]
+approval-safe = ["--permission-mode", "acceptEdits"]
+resume-args = ["--resume", "{sessionId}"]  # 缺省 = 不支持 resume → 禁用 auto-close
+
+[harness.mymcode]                  # 新 harness 零源码接入
+binaries = ["mymcode"]
+```
+
+数组字段覆盖语义：缺省 = 继承内置；显式数组（含空）= 覆盖
+（`approval-safe = []` 即清除内置默认）。`resume-args` 自含子命令
+（codex 的 `["resume","{sessionId}"]`、hermes 的
+`["chat","--resume","{sessionId}"]`）。
 
 ## 8 多路复用器
 
@@ -172,7 +216,8 @@ peer 方法集差异：
 | `agentSession`| ✓     | —    | 原生 session id（pane id 复用检测）  |
 
 tmux 下完成检测退化到文件契约 + transcript 启发；孤儿认领的探针相应
-降级（无 agentStatus/agentSession → 保守放行）。
+降级（无 agentStatus/agentSession → 保守放行）。tmux 也拿不到原生
+session id → auto-close 自动禁用（无 resume 锚点的 peer 保持常驻）。
 
 ## 9 已知边界
 
@@ -183,3 +228,6 @@ tmux 下完成检测退化到文件契约 + transcript 启发；孤儿认领的�
 - `sendKeys` 接口预留但目前零调用方
 - 非当前 session 的 unsettled 记录归原会话收尾；会话永不恢复则残留
   「running」态（registry 视图层，不影响正确性）
+- resume 依赖 herdr `agentSession` 报告的原生 session id 与 harness 自身
+  的 resume 命令行为（如 `claude --resume` 的会话分支语义）；pi 的
+  `--session <id>` 锚点格式建议在真实 herdr 环境实测确认

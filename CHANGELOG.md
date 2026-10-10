@@ -5,6 +5,34 @@ atelier 所有值得注意的变更都会记录在此文件。
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### Added
+
+- **peer 空闲自动回收 + resume 无损恢复**：subagent 完成任务后不再无限
+  占着 pane——completed 且空闲超过 `idleGraceMs`（默认 120s，宽限期内
+  追问仍直接复用原 pane）即自动关闭会话窗口；之后主会话再 `send` 该
+  peer 时，自动用 harness 原生 resume 能力（`claude --resume` /
+  `codex resume` / `pi --session` / `hermes chat --resume`）重开会话，
+  上下文完整保留。安全阀：无法 resume 的 peer（tmux 后端拿不到原生
+  session id、或 harness 未声明恢复命令）不会被自动关，退化为常驻；
+  失败/被卡/超时的 peer 也永不自动关（保留 send 解堵语义）。
+  新配置：`autoClose`（默认 `true`）、`idleGraceMs`（默认 `120000`），
+  `/atelier-config` 面板可编辑。
+- **统一 harness 配置文件（harnesses.toml）**：各 CLI 的功能入口
+  （探测 binary、启动子命令、模型/approval 参数组、resume 命令）从
+  TS 源码硬编码迁移为声明式 TOML。插件内置默认表随 atelier 分发
+  （适配即开箱可用）；用户可在 `~/.config/pi/atelier/harnesses.toml`
+  逐字段覆盖内置或登记全新 harness——新增/定制 harness 不再需要改源码
+  发版。
+
+### Changed
+
+- `runtime/harness/adapters.ts` 从六个手写 adapter 对象重构为
+  spec 驱动：`spec.ts` 统一负责 TOML 加载合并与 launch/resume 命令
+  组装，`adapters.ts` 只做 spec→adapter 编译 + generic 兜底工厂。
+  组装产物与原硬编码逐字一致（bun 冒烟验证），路由/探测行为不变。
+
 ## [0.4.0.1] - 2026-10-08
 
 ### Changed
