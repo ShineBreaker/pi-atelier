@@ -269,7 +269,7 @@ atelier 作为独立 pi-package（`github.com/ShineBreaker/pi-atelier`）发布�
   变更、path 兼容矩阵、已知问题），同样只写结论不写过程
 - **关联 commit 表**：列出本版本所有 commit 哈希 + 标题 + scope，方便溯源
 - **早期版本**：文件底部保留各历史版本段（不要合并或删除），形成可追溯的发布史
-- **CI/CD 不强求**：手工维护即可（atelier 节奏手动发版，无 CI 流水线）
+- **发版节奏**：手动发版（无 changesets/release-please）；GitHub Release 由 tag 推送触发的 CI 自动创建，无需手工录入
 
 ### 版本号
 
@@ -293,19 +293,20 @@ atelier 作为独立 pi-package（`github.com/ShineBreaker/pi-atelier`）发布�
 3. **bump package.json 版本号**：`build(package.json): bump version` 单独 commit
 4. **创建 git tag**：`git tag -s v0.X.Z -m "atelier v0.X.Z"` （GPG 签名 tag）
 5. **推送**：先 `git push origin main`，再 `git push origin v0.X.Z`
-6. **GitHub Release**（可选）：在 GitHub UI 基于 tag 创建 release notes，可直接复制 CHANGELOG 段
+6. **GitHub Release（CI 自动）**：tag 推送触发 `release` workflow（`.github/workflows/release.yml`）——校验 tag 与 package.json 版本一致 → `scripts/extract-release-notes.mjs` 从 CHANGELOG 提取版本段 → 创建 notes-only release（无资产：pi 插件是 TS 源码分发，社区惯例即纯 notes）。漏发的 tag 用 `gh workflow run release -f tag=v0.X.Z` 补发（release 已存在则只更新 notes）
 7. **父仓库 bump submodule 指针**（在 Guix-configs 父仓库）：单独 commit `build(atelier): bump submodule to 0.X.Z`
 
 ### 发版时 checklist
 
 ```
 □ 所有目标 commit 已合并到 main
-□ CHANGELOG.md 顶部新增版本段，含 Fixed/Added/Changed 分类
-□ package.json version 已 bump
+□ CHANGELOG.md 顶部新增版本段（三段式：营销段 + 分割线 + 克制正文引用 commit）
+□ package.json version 已 bump（与 tag 一致——CI 会校验，不一致直接失败）
 □ 语法验证通过（node --experimental-strip-types --check 所有 .ts）
 □ 跨模块符号引用验证通过
 □ git tag -s vX.Y.Z 已创建
 □ 推送 main + tag
+□ CI release workflow 绿（GitHub Release 已自动创建）
 □ 父仓库 submodule 指针已 bump
 ```
 
