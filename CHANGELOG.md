@@ -5,33 +5,48 @@ atelier 所有值得注意的变更都会记录在此文件。
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [未发布]
+## [0.4.1] - 2026-10-11
+
+subagent 干完活不再永远占着屏幕：会话空闲一会儿就自动收起，需要追问时
+用各家 CLI 自带的 resume 能力原样唤醒，上下文一页不丢。同时，各 CLI
+的接入方式（启动参数、权限 flag、恢复命令）统一收进一份 TOML 配置——
+新增或定制 agent harness 从此改配置文件就行，不用再动源码发版。
+
+---
 
 ### Added
 
-- **peer 空闲自动回收 + resume 无损恢复**：subagent 完成任务后不再无限
-  占着 pane——completed 且空闲超过 `idleGraceMs`（默认 120s，宽限期内
-  追问仍直接复用原 pane）即自动关闭会话窗口；之后主会话再 `send` 该
-  peer 时，自动用 harness 原生 resume 能力（`claude --resume` /
-  `codex resume` / `pi --session` / `hermes chat --resume`）重开会话，
-  上下文完整保留。安全阀：无法 resume 的 peer（tmux 后端拿不到原生
-  session id、或 harness 未声明恢复命令）不会被自动关，退化为常驻；
-  失败/被卡/超时的 peer 也永不自动关（保留 send 解堵语义）。
-  新配置：`autoClose`（默认 `true`）、`idleGraceMs`（默认 `120000`），
-  `/atelier-config` 面板可编辑。
-- **统一 harness 配置文件（harnesses.toml）**：各 CLI 的功能入口
-  （探测 binary、启动子命令、模型/approval 参数组、resume 命令）从
-  TS 源码硬编码迁移为声明式 TOML。插件内置默认表随 atelier 分发
-  （适配即开箱可用）；用户可在 `~/.config/pi/atelier/harnesses.toml`
-  逐字段覆盖内置或登记全新 harness——新增/定制 harness 不再需要改源码
-  发版。
+- **peer 空闲自动回收 + resume 无损重开**：任务完成后空闲超过宽限期
+  （默认 2 分钟）自动关闭 pane；之后再向该 peer 发消息会用 harness
+  原生 resume 重开会话。不可恢复的 peer 与失败/卡住的 peer 不会被
+  自动关。新增配置 `autoClose` / `idleGraceMs`。→ `a46cbbf`
+- **统一 harness 配置文件（harnesses.toml）**：插件自带默认表 +
+  用户覆盖文件，字段级合并。→ `f16e082`
 
 ### Changed
 
-- `runtime/harness/adapters.ts` 从六个手写 adapter 对象重构为
-  spec 驱动：`spec.ts` 统一负责 TOML 加载合并与 launch/resume 命令
-  组装，`adapters.ts` 只做 spec→adapter 编译 + generic 兜底工厂。
-  组装产物与原硬编码逐字一致（bun 冒烟验证），路由/探测行为不变。
+- harness 适配层从 TS 硬编码重构为 spec 驱动，组装产物与原实现逐字
+  一致，路由行为不变。→ `f16e082`
+
+### 关联提交
+
+| Commit    | 说明                                    | scope                          |
+| --------- | --------------------------------------- | ------------------------------ |
+| `f16e082` | FEATURE: 统一 harness 功能入口到 toml   | harness/ + context/            |
+| `a46cbbf` | FEATURE: peer 空闲自动回收 + resume 重开 | peer/monitor/index/config/registry |
+| `38f30b8` | DOCS: 两大特性文档                      | README/docs/AGENTS/CHANGELOG   |
+
+---
+
+## 技术细节 / Migration Notes
+
+- 行为变化：`autoClose` 默认开启（0.4.0 及之前 peer 完成后常驻）；
+  需要旧语义在 atelier.json 写 `"autoClose": false`
+- 新文件：用户 harness 覆盖 `~/.config/pi/atelier/harnesses.toml`
+  （可选，缺省用插件内置表）；spec 字段与合并语义见 `docs/atelier.md` §7.1
+- resume 依赖 herdr 后端的 `agentSession`（tmux 下 auto-close 自动禁用）；
+  `pi --session <id>` 锚点格式建议真实环境实测，不匹配时改 spec 的
+  `resume-args` 即可
 
 ## [0.4.0.1] - 2026-10-08
 
