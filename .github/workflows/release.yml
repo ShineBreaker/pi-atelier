@@ -44,7 +44,25 @@ jobs:
 
       - name: 从 CHANGELOG 提取版本段
         run: |
-          node scripts/extract-release-notes.mjs "$TAG_VERSION" > RELEASE_NOTES.md
+          # 内联而非外部脚本：dispatch 补发历史 tag 时 checkout 的是 tag 树，
+          # 脚本必须随 workflow 自包含。规则与 CHANGELOG 版本段一致——
+          # `## [X.Y.Z]` 行起，至下一个 `## [` 版本段止（随后的 Migration
+          # Notes 属于该版本，一并包含）。
+          node -e '
+            const { readFileSync, writeFileSync } = require("node:fs");
+            const version = process.env.TAG_VERSION;
+            const lines = readFileSync("CHANGELOG.md", "utf-8").split("\n");
+            const start = lines.findIndex((l) => l.startsWith(`## [${version}]`));
+            if (start === -1) {
+              console.error(`CHANGELOG.md 中没有 ${version} 的版本段`);
+              process.exit(1);
+            }
+            let end = lines.length;
+            for (let i = start + 1; i < lines.length; i++) {
+              if (lines[i].startsWith("## [")) { end = i; break; }
+            }
+            writeFileSync("RELEASE_NOTES.md", lines.slice(start, end).join("\n").trimEnd() + "\n");
+          '
           echo "--- RELEASE_NOTES.md 预览（前 10 行）---"
           head -10 RELEASE_NOTES.md
 
